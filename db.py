@@ -32,6 +32,7 @@ def init_db():
             price REAL DEFAULT 0,
             category_id INTEGER,
             stock INTEGER DEFAULT 0,
+            min_stock INTEGER DEFAULT 0,
             FOREIGN KEY (category_id) REFERENCES category(id)
         );
         CREATE TABLE IF NOT EXISTS stock_log (
@@ -43,12 +44,11 @@ def init_db():
             FOREIGN KEY (book_id) REFERENCES book(id)
         );
     """)
-    # 兼容旧数据库：如果 price 列不存在则添加
-    try:
-        c.execute("ALTER TABLE book ADD COLUMN price REAL DEFAULT 0")
-    except Exception:
-        pass
-    # 索引：加速查询
+    for col, typ in [("price", "REAL DEFAULT 0"), ("min_stock", "INTEGER DEFAULT 0")]:
+        try:
+            c.execute(f"ALTER TABLE book ADD COLUMN {col} {typ}")
+        except Exception:
+            pass
     c.executescript("""
         CREATE INDEX IF NOT EXISTS idx_book_isbn ON book(isbn);
         CREATE INDEX IF NOT EXISTS idx_log_created ON stock_log(created_at DESC);
@@ -58,12 +58,12 @@ def init_db():
     conn.close()
 
 
+# ── 分类 ──
 def get_categories():
     conn = get_conn()
     rows = conn.execute("SELECT * FROM category ORDER BY name").fetchall()
     conn.close()
     return rows
-
 
 def add_category(name):
     conn = get_conn()
@@ -71,13 +71,11 @@ def add_category(name):
     conn.commit()
     conn.close()
 
-
 def delete_category(cid):
     conn = get_conn()
     conn.execute("DELETE FROM category WHERE id=?", (cid,))
     conn.commit()
     conn.close()
-
 
 def rename_category(cid, new_name):
     conn = get_conn()
@@ -86,28 +84,26 @@ def rename_category(cid, new_name):
     conn.close()
 
 
+# ── 图书 ──
 def find_book_by_isbn(isbn):
     conn = get_conn()
     row = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE b.isbn=?", (isbn,)).fetchone()
     conn.close()
     return row
 
-
-def add_book(isbn, title, author, publisher, category_id, price=0):
+def add_book(isbn, title, author, publisher, category_id, price=0, min_stock=0):
     conn = get_conn()
-    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock) VALUES(?,?,?,?,?,?,0)",
-                 (isbn, title, author, publisher, price, category_id))
+    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock) VALUES(?,?,?,?,?,?,0,?)",
+                 (isbn, title, author, publisher, price, category_id, min_stock))
     conn.commit()
     conn.close()
 
-
-def update_book(book_id, title, author, publisher, category_id, price=0):
+def update_book(book_id, title, author, publisher, category_id, price=0, min_stock=0):
     conn = get_conn()
-    conn.execute("UPDATE book SET title=?, author=?, publisher=?, price=?, category_id=? WHERE id=?",
-                 (title, author, publisher, price, category_id, book_id))
+    conn.execute("UPDATE book SET title=?, author=?, publisher=?, price=?, category_id=?, min_stock=? WHERE id=?",
+                 (title, author, publisher, price, category_id, min_stock, book_id))
     conn.commit()
     conn.close()
-
 
 def delete_book(book_id):
     conn = get_conn()
@@ -115,7 +111,6 @@ def delete_book(book_id):
     conn.execute("DELETE FROM book WHERE id=?", (book_id,))
     conn.commit()
     conn.close()
-
 
 def update_stock(book_id, qty, direction):
     conn = get_conn()
@@ -126,35 +121,77 @@ def update_stock(book_id, qty, direction):
     conn.commit()
     conn.close()
 
-
 def get_all_books():
     conn = get_conn()
     rows = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title").fetchall()
     conn.close()
     return rows
 
-
-def get_stock_logs(book_id=None, limit=200):
+def search_books(keyword="", category_id=None):
     conn = get_conn()
-    if book_id:
-        rows = conn.execute("SELECT l.*, b.title, b.isbn FROM stock_log l JOIN book b ON l.book_id=b.id WHERE l.book_id=? ORDER BY l.created_at DESC", (book_id,)).fetchall()
-    else:
-        rows = conn.execute("SELECT l.*, b.title, b.isbn FROM stock_log l JOIN book b ON l.book_id=b.id ORDER BY l.created_at DESC LIMIT ?", (limit,)).fetchall()
+    sql = "SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE 1=1"
+    params = []
+    if keyword:
+        sql += " AND (b.title LIKE ? OR b.author LIKE ? OR b.isbn LIKE ?)"
+        k = f"%{keyword}%"
+        params += [k, k, k]
+    if category_id:
+        sql += " AND b.category_id=?"
+        params.append(category_id)
+    sql += " ORDER BY b.title"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return rows
+
+def get_low_stock_books():
+    conn = get_conn()
+    rows = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE b.min_stock > 0 AND b.stock <= b.min_stock ORDER BY b.stock").fetchall()
     conn.close()
     return rows
 
 
+# ── 出入库记录 ──
+def get_stock_logs(book_id=None, limit=200, direction=None, date_from=None, date_to=None, category_id=None):
+    conn = get_conn()
+    sql = "SELECT l.*, b.title, b.isbn FROM stock_log l JOIN book b ON l.book_id=b.id"
+    conditions, params = [], []
+    if book_id:
+        conditions.append("l.book_id=?")
+        params.append(book_id)
+    if direction:
+        conditions.append("l.direction=?")
+        params.append(direction)
+    if date_from:
+        conditions.append("l.created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("l.created_at <= ?")
+        params.append(date_to + " 23:59:59")
+    if category_id:
+        conditions.append("b.category_id=?")
+        params.append(category_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY l.created_at DESC"
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return rows
+
+
+# ── 导出 ──
 def export_books_csv(filepath):
     conn = get_conn()
-    rows = conn.execute("SELECT b.isbn, b.title, b.author, b.publisher, b.price, COALESCE(c.name,'') as category, b.stock FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title").fetchall()
+    rows = conn.execute("SELECT b.isbn, b.title, b.author, b.publisher, b.price, COALESCE(c.name,'') as category, b.stock, b.min_stock FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title").fetchall()
     conn.close()
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存"])
+        w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存"])
         for r in rows:
-            w.writerow([r["isbn"], r["title"], r["author"], r["publisher"], r["price"], r["category"], r["stock"]])
+            w.writerow([r["isbn"], r["title"], r["author"], r["publisher"], r["price"], r["category"], r["stock"], r["min_stock"]])
     return len(rows)
-
 
 def export_logs_csv(filepath):
     conn = get_conn()
@@ -168,12 +205,12 @@ def export_logs_csv(filepath):
     return len(rows)
 
 
+# ── 备份 ──
 def backup_db():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = os.path.join(BACKUP_DIR, f"library_{ts}.db")
     shutil.copy2(DB_PATH, dest)
-    # 保留最近 10 个备份
     backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith(".db")])
     for old in backups[:-10]:
         os.remove(os.path.join(BACKUP_DIR, old))
