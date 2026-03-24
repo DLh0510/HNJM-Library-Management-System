@@ -11,12 +11,28 @@ class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("图书出入库管理系统")
-        self.geometry("1000x650")
+        self.geometry("1125x678")
+        self.minsize(900, 500)
         db.init_db()
+        self._setup_style()
         self._build_ui()
         self.scan_entry.focus_set()
         self._start_auto_backup()
         self._check_low_stock()
+
+    def _setup_style(self):
+        style = ttk.Style()
+        style.configure("Treeview", rowheight=28)
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        # 斑马纹
+        style.map("Treeview", background=[("selected", "#0078d7")])
+
+    def _apply_stripe(self, tree):
+        """给 Treeview 加斑马纹"""
+        tree.tag_configure("odd", background="#f0f0f0")
+        tree.tag_configure("even", background="white")
+        for i, item in enumerate(tree.get_children()):
+            tree.item(item, tags=("odd" if i % 2 else "even",))
 
     def _build_ui(self):
         # 顶部栏
@@ -43,9 +59,9 @@ class App(ttk.Window):
         ttk.Label(self, text="最近出入库记录", font=("", 12, "bold")).pack(anchor=W, padx=15)
         cols = ("time", "isbn", "title", "direction", "qty")
         self.recent_tree = ttk.Treeview(self, columns=cols, show="headings", height=14)
-        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (160, 130, 250, 60, 60)):
+        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (160, 140, 280, 70, 70)):
             self.recent_tree.heading(col, text=hd)
-            self.recent_tree.column(col, width=w)
+            self.recent_tree.column(col, width=w, anchor=W)
         self.recent_tree.pack(fill=BOTH, expand=True, padx=15, pady=(0, 10))
         self._refresh_recent()
 
@@ -55,6 +71,7 @@ class App(ttk.Window):
             self.recent_tree.insert("", END, values=(
                 log["created_at"], log["isbn"], log["title"],
                 "入库" if log["direction"] == "in" else "出库", log["change"]))
+        self._apply_stripe(self.recent_tree)
 
     def _check_low_stock(self):
         low = db.get_low_stock_books()
@@ -80,7 +97,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("图书出入库")
         win.geometry("430x380")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         info = ttk.Labelframe(win, text="图书信息", padding=10)
         info.pack(fill=X, padx=15, pady=10)
@@ -119,7 +137,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("新增图书")
         win.geometry("440x430")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         fields = {}
         for i, (label, key) in enumerate([("ISBN", "isbn"), ("书名", "title"), ("作者", "author"), ("出版社", "publisher")]):
@@ -199,7 +218,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("分类管理")
         win.geometry("350x400")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         listbox = tk.Listbox(win, font=("", 12))
         listbox.pack(fill=BOTH, expand=True, padx=10, pady=10)
@@ -317,7 +337,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("编辑图书")
         win.geometry("420x330")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         fields = {}
         for i, (label, key, val) in enumerate([
@@ -395,9 +416,9 @@ class App(ttk.Window):
 
         cols = ("time", "isbn", "title", "direction", "qty")
         tree = ttk.Treeview(win, columns=cols, show="headings")
-        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (160, 130, 220, 60, 60)):
+        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (170, 140, 260, 70, 70)):
             tree.heading(col, text=hd)
-            tree.column(col, width=w)
+            tree.column(col, width=w, anchor=W)
         tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
 
         def refresh():
@@ -439,7 +460,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("批量出入库")
         win.geometry("650x480")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         ttk.Label(win, text="连续扫码添加到列表，最后统一提交", font=("", 11)).pack(pady=5)
 
@@ -517,7 +539,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("库存盘点")
         win.geometry("700x500")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         ttk.Label(win, text="逐本扫码，输入实际数量，与系统库存对比", font=("", 11)).pack(pady=5)
 
@@ -581,7 +604,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("设置 - ISBN 查询数据源")
         win.geometry("400x350")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         ttk.Label(win, text="调整优先级（上方优先），勾选启用", font=("", 11)).pack(padx=10, pady=8)
         cfg = isbn_lookup.load_config()
@@ -635,7 +659,8 @@ class App(ttk.Window):
         win = ttk.Toplevel(self)
         win.title("导出数据")
         win.geometry("300x150")
-        win.grab_set()
+        win.lift()
+        win.focus_force()
 
         def export(fn, name):
             path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
