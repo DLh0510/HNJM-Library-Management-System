@@ -31,6 +31,7 @@ jobs:
           --include-data-file=logo.png=logo.png
           --include-data-file=logo.ico=logo.ico
           --enable-plugin=tk-inter
+          --assume-yes-for-downloads
           --output-filename=图书出入库管理系统.exe
           app.py
 
