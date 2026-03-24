@@ -23,23 +23,22 @@ def resource_path(filename):
 LOGO_PATH = resource_path("logo.png")
 
 
-class LoginWindow(ttk.Window):
+class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("图书出入管理系统 - 登录")
         self.geometry("480x520")
         self.resizable(False, False)
+        self.current_user = None
         db.init_db()
-        self.logged_user = None
-        self._build()
+        self._build_login()
         self.bind("<Return>", lambda e: self._login())
 
-    def _build(self):
-        # 主容器居中
-        main = ttk.Frame(self)
-        main.place(relx=0.5, rely=0.5, anchor="center")
+    def _build_login(self):
+        self._login_frame = ttk.Frame(self)
+        self._login_frame.place(relx=0.5, rely=0.5, anchor="center")
+        main = self._login_frame
 
-        # Logo
         try:
             from PIL import Image, ImageTk
             img = Image.open(LOGO_PATH).resize((140, 140), Image.LANCZOS)
@@ -51,27 +50,20 @@ class LoginWindow(ttk.Window):
         ttk.Label(main, text="图书出入管理系统", font=("", 18, "bold"), foreground="#0066b3").pack()
         ttk.Label(main, text="请登录您的账户以继续", foreground="gray").pack(pady=(2, 20))
 
-        # 表单
         form = ttk.Frame(main)
         form.pack()
-
         ttk.Label(form, text="用户名", font=("", 11)).grid(row=0, column=0, sticky=W, pady=(0, 3))
         self.user_entry = ttk.Entry(form, width=30, font=("", 13))
         self.user_entry.grid(row=1, column=0, ipady=4)
-
         ttk.Label(form, text="密码", font=("", 11)).grid(row=2, column=0, sticky=W, pady=(12, 3))
         self.pwd_entry = ttk.Entry(form, width=30, font=("", 13), show="●")
         self.pwd_entry.grid(row=3, column=0, ipady=4)
-
         self.msg_label = ttk.Label(form, text="", foreground="red")
         self.msg_label.grid(row=4, column=0, pady=(8, 0))
-
         ttk.Button(form, text="登  录", bootstyle=PRIMARY, width=28,
                    command=self._login).grid(row=5, column=0, pady=(15, 0), ipady=4)
-
         ttk.Label(main, text="© 2026 河南经贸 图书馆信息技术部",
                   foreground="gray", font=("", 9)).pack(pady=(25, 0))
-
         self.user_entry.focus_set()
 
     def _login(self):
@@ -82,24 +74,24 @@ class LoginWindow(ttk.Window):
             return
         user = db.verify_user(username, password)
         if user:
-            self.logged_user = dict(user)
-            self.destroy()
+            self.current_user = dict(user)
+            self.unbind("<Return>")
+            self._login_frame.destroy()
+            self._enter_main()
         else:
             self.msg_label.config(text="用户名或密码错误")
             self.pwd_entry.delete(0, END)
 
-
-class App(ttk.Window):
-    def __init__(self, user):
-        super().__init__(themename="cosmo")
-        self.current_user = user
-        self.title(f"图书出入库管理系统 - {user.get('display_name', user['username'])}")
-        self.geometry("1350x710")
+    def _enter_main(self):
+        self.title(f"图书出入库管理系统 - {self.current_user.get('display_name', self.current_user['username'])}")
+        self.geometry("1350x750")
         self.minsize(900, 500)
+        self.resizable(True, True)
         self._setup_style()
         self._build_ui()
         self.scan_entry.focus_set()
         self._start_auto_backup()
+        self._check_low_stock()
         self._check_low_stock()
 
     def _setup_style(self):
@@ -267,7 +259,7 @@ class App(ttk.Window):
             threading.Thread(target=fetch, daemon=True).start()
 
         if auto_lookup and isbn:
-            do_lookup()
+            self.after(300, do_lookup)
 
         def save():
             title = fields["title"].get().strip()
@@ -683,9 +675,19 @@ class App(ttk.Window):
 
     # ── 手机扫码 ──
     def _open_mobile_scan(self):
+        self._mobile_queue = []
+
         def on_isbn(isbn):
-            # 在主线程处理
-            self.after(0, lambda: self._handle_mobile_isbn(isbn))
+            self._mobile_queue.append(isbn)
+
+        def poll_queue():
+            while self._mobile_queue:
+                isbn = self._mobile_queue.pop(0)
+                self._handle_mobile_isbn(isbn)
+            self.after(200, poll_queue)
+
+        url = mobile_scan.start(on_isbn)
+        self.after(200, poll_queue)
 
         url = mobile_scan.start(on_isbn)
 
@@ -711,13 +713,21 @@ class App(ttk.Window):
 
         ttk.Label(win, text=f"或手动访问：{url}", foreground="gray", font=("", 10)).pack()
         ttk.Label(win, text="手机和电脑需在同一WiFi下", foreground="orange", font=("", 10)).pack(pady=5)
+        ttk.Label(win, text="首次打开会提示证书不安全，点「继续访问」即可", foreground="gray", font=("", 9)).pack()
 
     def _handle_mobile_isbn(self, isbn):
+        # 防止重复弹窗
+        if hasattr(self, '_mobile_processing') and self._mobile_processing:
+            return
+        self._mobile_processing = True
+        print(f"[手机扫码] 收到ISBN: {isbn}")
         book = db.find_book_by_isbn(isbn)
         if book:
             self._open_stock_dialog(book)
         else:
             self._open_add_book(isbn, auto_lookup=True)
+        # 2秒后允许下一次
+        self.after(2000, lambda: setattr(self, '_mobile_processing', False))
 
     # ── 设置 ──
     def _open_settings(self):
@@ -807,7 +817,4 @@ class App(ttk.Window):
 
 
 if __name__ == "__main__":
-    login = LoginWindow()
-    login.mainloop()
-    if login.logged_user:
-        App(login.logged_user).mainloop()
+    App().mainloop()

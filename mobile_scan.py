@@ -1,7 +1,10 @@
-"""手机扫码 Web 服务：手机浏览器扫码 → WebSocket → 桌面程序"""
+"""手机扫码 Web 服务：手机浏览器扫码 → 桌面程序"""
 import threading
 import socket
+import ssl
 import json
+import tempfile
+import os
 from flask import Flask, Response
 
 # 回调函数，由主程序设置
@@ -32,15 +35,17 @@ h2{margin:20px 0 10px;font-size:20px}
 .ok{background:rgba(76,175,80,0.5)}
 .history{width:90vw;max-width:400px;margin:10px 0;font-size:14px;opacity:0.8}
 .history div{padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.2)}
+button.start{margin:15px;padding:12px 40px;font-size:16px;border:none;border-radius:10px;background:#fff;color:#667eea;font-weight:bold;cursor:pointer}
 </style>
 </head>
 <body>
 <h2>扫描图书条码</h2>
 <div id="reader"></div>
-<div id="result">等待扫码...</div>
+<button class="start" id="startBtn" onclick="startScan()">点击开始扫码</button>
+<div id="result">点击上方按钮开始</div>
 <div class="history" id="history"></div>
 <script>
-let lastCode = "", scanner;
+let lastCode = "";
 function send(isbn) {
     if (isbn === lastCode) return;
     lastCode = isbn;
@@ -54,13 +59,24 @@ function send(isbn) {
     h.prepend(d);
     setTimeout(() => { lastCode = ""; }, 2000);
 }
-scanner = new Html5Qrcode("reader");
-scanner.start({facingMode:"environment"}, {fps:10, qrbox:{width:250,height:150}},
-    (text) => send(text),
-    () => {}
-).catch(e => {
-    document.getElementById("result").textContent = "无法访问摄像头，请允许权限";
-});
+function startScan() {
+    document.getElementById("startBtn").style.display = "none";
+    document.getElementById("result").textContent = "对准条码即可自动识别";
+    const scanner = new Html5Qrcode("reader");
+    const config = {
+        fps: 15,
+        qrbox: function(vw, vh) { return {width: Math.min(vw, 300), height: Math.min(vh, 200)}; },
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+    };
+    scanner.start(
+        {facingMode: "environment"},
+        config,
+        (text, result) => { send(text); },
+        (err) => {}
+    ).catch(e => {
+        document.getElementById("result").textContent = "摄像头启动失败: " + e;
+    });
+}
 </script>
 </body>
 </html>"""
@@ -95,16 +111,60 @@ _server_thread = None
 _port = 5289
 
 
+def _generate_self_signed_cert():
+    """生成自签名证书用于 HTTPS"""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, get_local_ip())])
+        cert = (x509.CertificateBuilder()
+                .subject_name(name).issuer_name(name)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.datetime.utcnow())
+                .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+                .add_extension(x509.SubjectAlternativeName([
+                    x509.IPAddress(ipaddress.ip_address(get_local_ip()))
+                ]), critical=False)
+                .sign(key, hashes.SHA256()))
+
+        tmp = tempfile.mkdtemp()
+        cert_path = os.path.join(tmp, "cert.pem")
+        key_path = os.path.join(tmp, "key.pem")
+        with open(cert_path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(key_path, "wb") as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
+        return cert_path, key_path
+    except ImportError:
+        return None, None
+
+
+import ipaddress
+
+
 def start(on_isbn_callback):
-    """启动 Web 服务，返回访问 URL"""
+    """启动 HTTPS Web 服务，返回访问 URL"""
     global _on_isbn, _server_thread
     _on_isbn = on_isbn_callback
+    ip = get_local_ip()
+
     if _server_thread and _server_thread.is_alive():
-        return f"http://{get_local_ip()}:{_port}"
+        return f"https://{ip}:{_port}"
+
+    cert_path, key_path = _generate_self_signed_cert()
 
     def run():
-        app.run(host="0.0.0.0", port=_port, threaded=True)
+        if cert_path:
+            app.run(host="0.0.0.0", port=_port, threaded=True, ssl_context=(cert_path, key_path))
+        else:
+            app.run(host="0.0.0.0", port=_port, threaded=True)
 
     _server_thread = threading.Thread(target=run, daemon=True)
     _server_thread.start()
-    return f"http://{get_local_ip()}:{_port}"
+    return f"https://{ip}:{_port}" if cert_path else f"http://{ip}:{_port}"
