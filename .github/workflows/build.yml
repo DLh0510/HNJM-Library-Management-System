@@ -20,10 +20,16 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install ttkbootstrap pillow "pyinstaller<6" tinyaes flask cryptography qrcode pypng
+        run: pip install ttkbootstrap pillow pyinstaller flask cryptography qrcode pypng
 
       - name: 打包
-        run: pyinstaller --onefile --windowed --name 图书出入库管理系统 --icon=logo.ico --add-data "logo.png;." --add-data "logo.ico;." --key=hnjm2026library app.py
+        run: pyinstaller --onefile --windowed --name 图书出入库管理系统 --icon=logo.ico --add-data "logo.png;." --add-data "logo.ico;." app.py
+
+      - name: 测试运行
+        run: |
+          cd dist
+          dir
+        shell: cmd
 
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/')
