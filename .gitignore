@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+library.db
+backups/
+api_config.json
+.DS_Store
