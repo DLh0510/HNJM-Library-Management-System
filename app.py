@@ -7,6 +7,7 @@ import os
 import sys
 import db
 import isbn_lookup
+import mobile_scan
 
 def resource_path(filename):
     """兼容 PyInstaller 和 Nuitka 打包后的资源路径"""
@@ -129,7 +130,7 @@ class App(ttk.Window):
                           ("导出", self._export_menu), ("图书列表", self._open_book_list),
                           ("出入库记录", self._open_logs), ("分类管理", self._open_category_mgr),
                           ("库存预警", self._open_low_stock), ("批量操作", self._open_batch),
-                          ("盘点", self._open_inventory)]:
+                          ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan)]:
             ttk.Button(top, text=text, command=cmd, bootstyle=OUTLINE).pack(side=RIGHT, padx=2)
 
         # 提示
@@ -679,6 +680,44 @@ class App(ttk.Window):
 
         ttk.Button(bf, text="应用盘点结果（调整库存）", bootstyle=WARNING, command=apply_diff).pack(side=RIGHT, padx=5)
         scan.focus_set()
+
+    # ── 手机扫码 ──
+    def _open_mobile_scan(self):
+        def on_isbn(isbn):
+            # 在主线程处理
+            self.after(0, lambda: self._handle_mobile_isbn(isbn))
+
+        url = mobile_scan.start(on_isbn)
+
+        win = ttk.Toplevel(self)
+        win.title("手机扫码")
+        win.geometry("380x420")
+        win.lift()
+        win.focus_force()
+
+        ttk.Label(win, text="用手机扫描下方二维码", font=("", 13)).pack(pady=(15, 5))
+        ttk.Label(win, text="打开网页后即可扫描图书条码", foreground="gray").pack()
+
+        # 生成二维码
+        try:
+            import qrcode
+            from PIL import ImageTk
+            qr = qrcode.make(url, box_size=6, border=2)
+            qr = qr.resize((250, 250))
+            self._qr_img = ImageTk.PhotoImage(qr)
+            ttk.Label(win, image=self._qr_img).pack(pady=10)
+        except Exception:
+            ttk.Label(win, text=url, font=("", 14, "bold"), foreground="blue").pack(pady=20)
+
+        ttk.Label(win, text=f"或手动访问：{url}", foreground="gray", font=("", 10)).pack()
+        ttk.Label(win, text="手机和电脑需在同一WiFi下", foreground="orange", font=("", 10)).pack(pady=5)
+
+    def _handle_mobile_isbn(self, isbn):
+        book = db.find_book_by_isbn(isbn)
+        if book:
+            self._open_stock_dialog(book)
+        else:
+            self._open_add_book(isbn, auto_lookup=True)
 
     # ── 设置 ──
     def _open_settings(self):
