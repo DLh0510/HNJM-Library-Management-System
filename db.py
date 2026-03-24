@@ -43,6 +43,12 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (book_id) REFERENCES book(id)
         );
+        CREATE TABLE IF NOT EXISTS user (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL,
+            display_name TEXT DEFAULT ''
+        );
     """)
     for col, typ in [("price", "REAL DEFAULT 0"), ("min_stock", "INTEGER DEFAULT 0")]:
         try:
@@ -54,6 +60,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_log_created ON stock_log(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_log_book ON stock_log(book_id);
     """)
+    # 初始账号
+    for user, pwd, name in [("admin", "123456", "管理员"), ("yu", "123456", "余老师"),
+                             ("li", "123456", "李老师"), ("han", "123456", "韩老师")]:
+        try:
+            c.execute("INSERT INTO user(username, password, display_name) VALUES(?,?,?)", (user, pwd, name))
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -215,3 +228,11 @@ def backup_db():
     for old in backups[:-10]:
         os.remove(os.path.join(BACKUP_DIR, old))
     return dest
+
+
+# ── 用户 ──
+def verify_user(username, password):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM user WHERE username=? AND password=?", (username, password)).fetchone()
+    conn.close()
+    return row

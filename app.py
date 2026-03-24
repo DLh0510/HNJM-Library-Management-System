@@ -3,17 +3,86 @@ from ttkbootstrap.constants import *
 from tkinter import messagebox, simpledialog, filedialog
 import tkinter as tk
 import threading
+import os
 import db
 import isbn_lookup
 
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
 
-class App(ttk.Window):
+
+class LoginWindow(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
-        self.title("图书出入库管理系统")
+        self.title("图书出入管理系统 - 登录")
+        self.geometry("480x520")
+        self.resizable(False, False)
+        db.init_db()
+        self.logged_user = None
+        self._build()
+        self.bind("<Return>", lambda e: self._login())
+
+    def _build(self):
+        # 主容器居中
+        main = ttk.Frame(self)
+        main.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Logo
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(LOGO_PATH).resize((140, 140), Image.LANCZOS)
+            self._logo_img = ImageTk.PhotoImage(img)
+            ttk.Label(main, image=self._logo_img).pack(pady=(0, 5))
+        except Exception:
+            ttk.Label(main, text="河南经贸", font=("", 24, "bold"), foreground="#0066b3").pack(pady=(0, 5))
+
+        ttk.Label(main, text="图书出入管理系统", font=("", 18, "bold"), foreground="#0066b3").pack()
+        ttk.Label(main, text="请登录您的账户以继续", foreground="gray").pack(pady=(2, 20))
+
+        # 表单
+        form = ttk.Frame(main)
+        form.pack()
+
+        ttk.Label(form, text="用户名", font=("", 11)).grid(row=0, column=0, sticky=W, pady=(0, 3))
+        self.user_entry = ttk.Entry(form, width=30, font=("", 13))
+        self.user_entry.grid(row=1, column=0, ipady=4)
+
+        ttk.Label(form, text="密码", font=("", 11)).grid(row=2, column=0, sticky=W, pady=(12, 3))
+        self.pwd_entry = ttk.Entry(form, width=30, font=("", 13), show="●")
+        self.pwd_entry.grid(row=3, column=0, ipady=4)
+
+        self.msg_label = ttk.Label(form, text="", foreground="red")
+        self.msg_label.grid(row=4, column=0, pady=(8, 0))
+
+        ttk.Button(form, text="登  录", bootstyle=PRIMARY, width=28,
+                   command=self._login).grid(row=5, column=0, pady=(15, 0), ipady=4)
+
+        ttk.Label(main, text="© 2026 河南经贸 图书馆信息技术部",
+                  foreground="gray", font=("", 9)).pack(pady=(25, 0))
+
+        self.user_entry.focus_set()
+
+    def _login(self):
+        username = self.user_entry.get().strip()
+        password = self.pwd_entry.get().strip()
+        if not username or not password:
+            self.msg_label.config(text="请输入用户名和密码")
+            return
+        user = db.verify_user(username, password)
+        if user:
+            self.logged_user = dict(user)
+            self.destroy()
+        else:
+            self.msg_label.config(text="用户名或密码错误")
+            self.pwd_entry.delete(0, END)
+
+
+class App(ttk.Window):
+    def __init__(self, user):
+        super().__init__(themename="cosmo")
+        self.current_user = user
+        self.title(f"图书出入库管理系统 - {user.get('display_name', user['username'])}")
         self.geometry("1125x678")
         self.minsize(900, 500)
-        db.init_db()
         self._setup_style()
         self._build_ui()
         self.scan_entry.focus_set()
@@ -687,4 +756,7 @@ class App(ttk.Window):
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    login = LoginWindow()
+    login.mainloop()
+    if login.logged_user:
+        App(login.logged_user).mainloop()
