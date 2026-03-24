@@ -1,4 +1,4 @@
-name: 打包 EXE (Nuitka)
+name: 打包 EXE
 
 on:
   push:
@@ -20,23 +20,13 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install ttkbootstrap pillow nuitka ordered-set zstandard
+        run: pip install ttkbootstrap pillow pyinstaller tinyaes flask cryptography qrcode pypng
 
-      - name: Nuitka 编译
-        run: >
-          python -m nuitka
-          --onefile
-          --windows-console-mode=disable
-          --windows-icon-from-ico=logo.ico
-          --include-data-file=logo.png=logo.png
-          --include-data-file=logo.ico=logo.ico
-          --enable-plugin=tk-inter
-          --assume-yes-for-downloads
-          --output-filename=图书出入库管理系统.exe
-          app.py
+      - name: 打包
+        run: pyinstaller --onefile --windowed --name 图书出入库管理系统 --icon=logo.ico --add-data "logo.png;." --add-data "logo.ico;." --key=hnjm2026library app.py
 
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: 图书出入库管理系统.exe
+          files: dist/图书出入库管理系统.exe
