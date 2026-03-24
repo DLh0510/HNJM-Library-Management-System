@@ -61,7 +61,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_log_book ON stock_log(book_id);
     """)
     # 初始账号
-    for user, pwd, name in [("admin", "123456", "管理员"), ("yu", "123456", "余老师"),
+    for user, pwd, name in [("admin", "123456", "管理员"), ("yu", "123456", "于老师"),
                              ("li", "123456", "李老师"), ("han", "123456", "韩老师")]:
         try:
             c.execute("INSERT INTO user(username, password, display_name) VALUES(?,?,?)", (user, pwd, name))

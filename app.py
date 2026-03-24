@@ -81,7 +81,7 @@ class App(ttk.Window):
         super().__init__(themename="cosmo")
         self.current_user = user
         self.title(f"图书出入库管理系统 - {user.get('display_name', user['username'])}")
-        self.geometry("1125x678")
+        self.geometry("1350x710")
         self.minsize(900, 500)
         self._setup_style()
         self._build_ui()
