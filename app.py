@@ -4,10 +4,17 @@ from tkinter import messagebox, simpledialog, filedialog
 import tkinter as tk
 import threading
 import os
+import sys
 import db
 import isbn_lookup
 
-LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
+def resource_path(filename):
+    """兼容 PyInstaller 打包后的资源路径"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, filename)
+    return os.path.join(os.path.dirname(__file__), filename)
+
+LOGO_PATH = resource_path("logo.png")
 
 
 class LoginWindow(ttk.Window):
