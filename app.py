@@ -122,30 +122,55 @@ class App(ttk.Window):
                           ("导出", self._export_menu), ("图书列表", self._open_book_list),
                           ("出入库记录", self._open_logs), ("分类管理", self._open_category_mgr),
                           ("库存预警", self._open_low_stock), ("批量操作", self._open_batch),
-                          ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan)]:
+                          ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan),
+                          ("改密码", self._open_change_pwd)]:
             ttk.Button(top, text=text, command=cmd, bootstyle=OUTLINE).pack(side=RIGHT, padx=2)
 
         # 提示
         ttk.Label(self, text="请使用扫码枪扫描图书条码，或手动输入ISBN后按回车",
                   font=("", 11), foreground="gray").pack(pady=(5, 3))
 
+        # 统计看板
+        stats_frame = ttk.Frame(self)
+        stats_frame.pack(fill=X, padx=15, pady=(5, 8))
+        self._stats_labels = {}
+        for key, label in [("total_books", "图书种类"), ("total_stock", "总藏书量"),
+                           ("today_in", "今日入库"), ("today_out", "今日出库"), ("low_count", "库存预警")]:
+            f = ttk.Labelframe(stats_frame, text=label, padding=5)
+            f.pack(side=LEFT, expand=True, fill=X, padx=3)
+            lbl = ttk.Label(f, text="0", font=("", 18, "bold"), anchor="center")
+            lbl.pack(fill=X)
+            self._stats_labels[key] = lbl
+
         # 最近记录
         ttk.Label(self, text="最近出入库记录", font=("", 12, "bold")).pack(anchor=W, padx=15)
-        cols = ("time", "isbn", "title", "direction", "qty")
-        self.recent_tree = ttk.Treeview(self, columns=cols, show="headings", height=14)
-        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (160, 140, 280, 70, 70)):
+        cols = ("time", "isbn", "title", "direction", "qty", "operator")
+        self.recent_tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量", "操作员"), (150, 130, 240, 60, 60, 80)):
             self.recent_tree.heading(col, text=hd)
             self.recent_tree.column(col, width=w, anchor=W)
         self.recent_tree.pack(fill=BOTH, expand=True, padx=15, pady=(0, 10))
         self._refresh_recent()
+        self._refresh_stats()
+
+    def _refresh_stats(self):
+        stats = db.get_stats()
+        colors = {"low_count": "red" if stats["low_count"] > 0 else None}
+        for key, lbl in self._stats_labels.items():
+            lbl.config(text=str(stats[key]))
+            if colors.get(key):
+                lbl.config(foreground=colors[key])
 
     def _refresh_recent(self):
         self.recent_tree.delete(*self.recent_tree.get_children())
         for log in db.get_stock_logs(limit=20):
             self.recent_tree.insert("", END, values=(
                 log["created_at"], log["isbn"], log["title"],
-                "入库" if log["direction"] == "in" else "出库", log["change"]))
+                "入库" if log["direction"] == "in" else "出库", log["change"],
+                log["operator"] or ""))
         self._apply_stripe(self.recent_tree)
+        if hasattr(self, '_stats_labels'):
+            self._refresh_stats()
 
     def _check_low_stock(self):
         low = db.get_low_stock_books()
@@ -196,7 +221,7 @@ class App(ttk.Window):
                 return messagebox.showwarning("提示", "数量必须大于0")
             if direction == "out" and qty > book["stock"]:
                 return messagebox.showwarning("提示", "库存不足")
-            db.update_stock(book["id"], qty, direction)
+            db.update_stock(book["id"], qty, direction, self.current_user.get("display_name",""))
             messagebox.showinfo("成功", f"{'入库' if direction == 'in' else '出库'} {qty} 本")
             win.destroy()
             self._refresh_recent()
@@ -227,6 +252,7 @@ class App(ttk.Window):
 
         ttk.Label(win, text="单价(元)：").grid(row=4, column=0, padx=10, pady=4, sticky=E)
         price_var = tk.DoubleVar(value=0)
+        self._current_price_var = price_var
         ttk.Entry(win, textvariable=price_var, width=30).grid(row=4, column=1, padx=10, pady=4)
 
         ttk.Label(win, text="分类：").grid(row=5, column=0, padx=10, pady=4, sticky=E)
@@ -277,7 +303,7 @@ class App(ttk.Window):
                 db.add_book(fields["isbn"].get().strip(), title, fields["author"].get().strip(),
                             fields["publisher"].get().strip(), cat_id, price, min_var.get())
                 book = db.find_book_by_isbn(fields["isbn"].get().strip())
-                db.update_stock(book["id"], qty, "in")
+                db.update_stock(book["id"], qty, "in", self.current_user.get("display_name",""))
                 messagebox.showinfo("成功", f"图书已添加，入库 {qty} 本")
                 win.destroy()
                 self._refresh_recent()
@@ -488,9 +514,9 @@ class App(ttk.Window):
         cat_combo.set("全部")
         cat_combo.pack(side=LEFT, padx=3)
 
-        cols = ("time", "isbn", "title", "direction", "qty")
+        cols = ("time", "isbn", "title", "direction", "qty", "operator")
         tree = ttk.Treeview(win, columns=cols, show="headings")
-        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量"), (170, 140, 260, 70, 70)):
+        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量", "操作员"), (155, 130, 220, 60, 60, 80)):
             tree.heading(col, text=hd)
             tree.column(col, width=w, anchor=W)
         tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
@@ -504,7 +530,8 @@ class App(ttk.Window):
                                           date_to=to_entry.get().strip() or None, category_id=cid, limit=500):
                 tree.insert("", END, values=(
                     log["created_at"], log["isbn"], log["title"],
-                    "入库" if log["direction"] == "in" else "出库", log["change"]))
+                    "入库" if log["direction"] == "in" else "出库", log["change"],
+                    log["operator"] or ""))
 
         ttk.Button(sf, text="筛选", bootstyle=PRIMARY, command=refresh).pack(side=LEFT, padx=5)
         refresh()
@@ -595,7 +622,7 @@ class App(ttk.Window):
                 if direction == "out" and item["qty"] > book["stock"]:
                     fail += 1
                     continue
-                db.update_stock(book["id"], item["qty"], direction)
+                db.update_stock(book["id"], item["qty"], direction, self.current_user.get("display_name",""))
                 ok += 1
             msg = f"成功 {ok} 本"
             if fail:
@@ -665,7 +692,7 @@ class App(ttk.Window):
                 diff = item["diff"]
                 if diff == 0: continue
                 direction = "in" if diff > 0 else "out"
-                db.update_stock(item["book"]["id"], abs(diff), direction)
+                db.update_stock(item["book"]["id"], abs(diff), direction, self.current_user.get("display_name",""))
             messagebox.showinfo("完成", "库存已按盘点结果调整")
             win.destroy()
             self._refresh_recent()
@@ -676,20 +703,25 @@ class App(ttk.Window):
     # ── 手机扫码 ──
     def _open_mobile_scan(self):
         self._mobile_queue = []
+        self._price_queue = []
 
         def on_isbn(isbn):
             self._mobile_queue.append(isbn)
+
+        def on_price(price):
+            self._price_queue.append(price)
 
         def poll_queue():
             while self._mobile_queue:
                 isbn = self._mobile_queue.pop(0)
                 self._handle_mobile_isbn(isbn)
+            while self._price_queue:
+                price = self._price_queue.pop(0)
+                self._handle_mobile_price(price)
             self.after(200, poll_queue)
 
-        url = mobile_scan.start(on_isbn)
+        url = mobile_scan.start(on_isbn, on_price)
         self.after(200, poll_queue)
-
-        url = mobile_scan.start(on_isbn)
 
         win = ttk.Toplevel(self)
         win.title("手机扫码")
@@ -728,6 +760,51 @@ class App(ttk.Window):
             self._open_add_book(isbn, auto_lookup=True)
         # 2秒后允许下一次
         self.after(2000, lambda: setattr(self, '_mobile_processing', False))
+
+    def _handle_mobile_price(self, price):
+        """OCR 识别到价格后自动填入当前新增图书窗口的单价"""
+        try:
+            if hasattr(self, '_current_price_var'):
+                self._current_price_var.set(float(price))
+                print(f"[OCR] 已填入价格: {price}")
+        except Exception:
+            pass
+
+    # ── 修改密码 ──
+    def _open_change_pwd(self):
+        win = ttk.Toplevel(self)
+        win.title("修改密码")
+        win.geometry("350x220")
+        win.lift()
+        win.focus_force()
+
+        ttk.Label(win, text="旧密码：").grid(row=0, column=0, padx=10, pady=8, sticky=E)
+        old_e = ttk.Entry(win, show="●", width=25)
+        old_e.grid(row=0, column=1, padx=10, pady=8)
+
+        ttk.Label(win, text="新密码：").grid(row=1, column=0, padx=10, pady=8, sticky=E)
+        new_e = ttk.Entry(win, show="●", width=25)
+        new_e.grid(row=1, column=1, padx=10, pady=8)
+
+        ttk.Label(win, text="确认密码：").grid(row=2, column=0, padx=10, pady=8, sticky=E)
+        cfm_e = ttk.Entry(win, show="●", width=25)
+        cfm_e.grid(row=2, column=1, padx=10, pady=8)
+
+        def save():
+            old, new, cfm = old_e.get(), new_e.get(), cfm_e.get()
+            if not old or not new:
+                return messagebox.showwarning("提示", "请填写完整", parent=win)
+            if new != cfm:
+                return messagebox.showwarning("提示", "两次密码不一致", parent=win)
+            if len(new) < 4:
+                return messagebox.showwarning("提示", "密码至少4位", parent=win)
+            if db.change_password(self.current_user["username"], old, new):
+                messagebox.showinfo("成功", "密码已修改", parent=win)
+                win.destroy()
+            else:
+                messagebox.showerror("失败", "旧密码错误", parent=win)
+
+        ttk.Button(win, text="确认修改", bootstyle=SUCCESS, command=save).grid(row=3, column=0, columnspan=2, pady=15)
 
     # ── 设置 ──
     def _open_settings(self):

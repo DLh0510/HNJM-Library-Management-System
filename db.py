@@ -40,6 +40,7 @@ def init_db():
             book_id INTEGER NOT NULL,
             change INTEGER NOT NULL,
             direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+            operator TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (book_id) REFERENCES book(id)
         );
@@ -55,6 +56,10 @@ def init_db():
             c.execute(f"ALTER TABLE book ADD COLUMN {col} {typ}")
         except Exception:
             pass
+    try:
+        c.execute("ALTER TABLE stock_log ADD COLUMN operator TEXT DEFAULT ''")
+    except Exception:
+        pass
     c.executescript("""
         CREATE INDEX IF NOT EXISTS idx_book_isbn ON book(isbn);
         CREATE INDEX IF NOT EXISTS idx_log_created ON stock_log(created_at DESC);
@@ -125,12 +130,12 @@ def delete_book(book_id):
     conn.commit()
     conn.close()
 
-def update_stock(book_id, qty, direction):
+def update_stock(book_id, qty, direction, operator=""):
     conn = get_conn()
     sign = qty if direction == "in" else -qty
     conn.execute("UPDATE book SET stock = stock + ? WHERE id=?", (sign, book_id))
-    conn.execute("INSERT INTO stock_log(book_id, change, direction, created_at) VALUES(?,?,?,datetime('now','localtime'))",
-                 (book_id, qty, direction))
+    conn.execute("INSERT INTO stock_log(book_id, change, direction, operator, created_at) VALUES(?,?,?,?,datetime('now','localtime'))",
+                 (book_id, qty, direction, operator))
     conn.commit()
     conn.close()
 
@@ -208,13 +213,13 @@ def export_books_csv(filepath):
 
 def export_logs_csv(filepath):
     conn = get_conn()
-    rows = conn.execute("SELECT l.created_at, b.isbn, b.title, l.direction, l.change FROM stock_log l JOIN book b ON l.book_id=b.id ORDER BY l.created_at DESC").fetchall()
+    rows = conn.execute("SELECT l.created_at, b.isbn, b.title, l.direction, l.change, l.operator FROM stock_log l JOIN book b ON l.book_id=b.id ORDER BY l.created_at DESC").fetchall()
     conn.close()
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["时间", "ISBN", "书名", "类型", "数量"])
+        w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员"])
         for r in rows:
-            w.writerow([r["created_at"], r["isbn"], r["title"], "入库" if r["direction"] == "in" else "出库", r["change"]])
+            w.writerow([r["created_at"], r["isbn"], r["title"], "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"]])
     return len(rows)
 
 
@@ -236,3 +241,28 @@ def verify_user(username, password):
     row = conn.execute("SELECT * FROM user WHERE username=? AND password=?", (username, password)).fetchone()
     conn.close()
     return row
+
+def change_password(username, old_pwd, new_pwd):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM user WHERE username=? AND password=?", (username, old_pwd)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    conn.execute("UPDATE user SET password=? WHERE username=?", (new_pwd, username))
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ── 统计 ──
+def get_stats():
+    conn = get_conn()
+    total_books = conn.execute("SELECT COUNT(*) FROM book").fetchone()[0]
+    total_stock = conn.execute("SELECT COALESCE(SUM(stock),0) FROM book").fetchone()[0]
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_in = conn.execute("SELECT COALESCE(SUM(change),0) FROM stock_log WHERE direction='in' AND created_at >= ?", (today,)).fetchone()[0]
+    today_out = conn.execute("SELECT COALESCE(SUM(change),0) FROM stock_log WHERE direction='out' AND created_at >= ?", (today,)).fetchone()[0]
+    low_count = conn.execute("SELECT COUNT(*) FROM book WHERE min_stock > 0 AND stock <= min_stock").fetchone()[0]
+    conn.close()
+    return {"total_books": total_books, "total_stock": total_stock,
+            "today_in": today_in, "today_out": today_out, "low_count": low_count}

@@ -9,6 +9,7 @@ from flask import Flask, Response
 
 # 回调函数，由主程序设置
 _on_isbn = None
+_on_price = None
 
 app = Flask(__name__)
 app.logger.disabled = True
@@ -43,6 +44,13 @@ button.start{margin:15px;padding:12px 40px;font-size:16px;border:none;border-rad
 <div id="reader"></div>
 <button class="start" id="startBtn" onclick="startScan()">点击开始扫码</button>
 <div id="result">点击上方按钮开始</div>
+<div id="priceBox" style="display:none;margin:10px auto;width:90vw;max-width:400px;text-align:center">
+  <label style="display:inline-block;padding:10px 25px;background:rgba(255,255,255,0.3);border-radius:10px;cursor:pointer;font-size:15px;backdrop-filter:blur(10px)">
+    拍照识别价格
+    <input type="file" accept="image/*" capture="environment" id="priceInput" style="display:none" onchange="ocrPrice(this)">
+  </label>
+  <div id="priceResult" style="margin-top:8px;font-size:16px"></div>
+</div>
 <div class="history" id="history"></div>
 <script>
 let lastCode = "";
@@ -62,6 +70,7 @@ function send(isbn) {
 function startScan() {
     document.getElementById("startBtn").style.display = "none";
     document.getElementById("result").textContent = "对准条码即可自动识别";
+    document.getElementById("priceBox").style.display = "block";
     const scanner = new Html5Qrcode("reader");
     const config = {
         fps: 15,
@@ -76,6 +85,29 @@ function startScan() {
     ).catch(e => {
         document.getElementById("result").textContent = "摄像头启动失败: " + e;
     });
+}
+function ocrPrice(input) {
+    if (!input.files[0]) return;
+    const pr = document.getElementById("priceResult");
+    pr.textContent = "识别中...";
+    const reader = new FileReader();
+    reader.onload = function() {
+        fetch("/ocr_price", {method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({isbn: lastCode, image: reader.result})
+        }).then(r=>r.json()).then(d => {
+            if (d.price) {
+                pr.textContent = "识别价格: " + d.price + " 元";
+                pr.style.color = "#4CAF50";
+                fetch("/scan", {method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({price: d.price})});
+            } else {
+                pr.textContent = "未识别到价格，请手动输入";
+                pr.style.color = "#ff9800";
+            }
+        }).catch(e => { pr.textContent = "识别失败"; });
+    };
+    reader.readAsDataURL(input.files[0]);
+    input.value = "";
 }
 </script>
 </body>
@@ -94,6 +126,69 @@ def scan():
     if data and data.get("isbn") and _on_isbn:
         _on_isbn(data["isbn"])
     return "ok"
+
+
+@app.route("/ocr_price", methods=["POST"])
+def ocr_price():
+    from flask import request
+    import base64
+    import re
+    import requests as req
+    try:
+        data = request.get_json(silent=True)
+        if not data or not data.get("image"):
+            return json.dumps({"price": ""})
+
+        # base64 图片数据
+        img_b64 = data["image"].split(",")[1] if "," in data["image"] else data["image"]
+
+        # 压缩图片减少上传体积
+        import base64 as b64mod
+        from PIL import Image
+        import io
+        img_bytes = b64mod.b64decode(img_b64)
+        img = Image.open(io.BytesIO(img_bytes))
+        if max(img.size) > 1500:
+            img.thumbnail((1500, 1500))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        img_b64 = b64mod.b64encode(buf.getvalue()).decode("ascii")
+
+        # 调用 PaddleOCR API
+        resp = req.post(
+            "https://v745g0e1g0272fab.aistudio-app.com/layout-parsing",
+            headers={"Authorization": "token 28bf193d7d03c7ba240811ae3f6f10b918a158b9", "Content-Type": "application/json"},
+            json={"file": img_b64, "fileType": 1, "useDocOrientationClassify": False, "useDocUnwarping": False, "useChartRecognition": False},
+            timeout=30
+        )
+        text = ""
+        if resp.status_code == 200:
+            result = resp.json().get("result", {})
+            for res in result.get("layoutParsingResults", []):
+                text += res.get("markdown", {}).get("text", "")
+        print(f"[OCR] 识别文本: {text}")
+
+        # 提取价格
+        patterns = [
+            r'(?:定价|价格)[：:\s]*[¥￥]?\s*(\d+\.?\d*)',
+            r'[¥￥]\s*(\d+\.?\d*)',
+            r'(\d+\.\d{2})\s*元',
+            r'CNY\s*(\d+\.?\d*)',
+            r'(\d{2,6}\.\d{2})',
+        ]
+        for p in patterns:
+            m = re.search(p, text)
+            if m:
+                price = m.group(1)
+                print(f"[OCR] 识别价格: {price}")
+                if _on_price:
+                    _on_price(price)
+                return json.dumps({"price": price})
+
+        return json.dumps({"price": "", "text": text})
+    except Exception as e:
+        print(f"[OCR] 错误: {e}")
+        return json.dumps({"price": "", "error": str(e)})
 
 
 def get_local_ip():
@@ -148,10 +243,11 @@ def _generate_self_signed_cert():
 import ipaddress
 
 
-def start(on_isbn_callback):
+def start(on_isbn_callback, on_price_callback=None):
     """启动 HTTPS Web 服务，返回访问 URL"""
-    global _on_isbn, _server_thread
+    global _on_isbn, _on_price, _server_thread
     _on_isbn = on_isbn_callback
+    _on_price = on_price_callback
     ip = get_local_ip()
 
     if _server_thread and _server_thread.is_alive():
