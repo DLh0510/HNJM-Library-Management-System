@@ -122,8 +122,7 @@ class App(ttk.Window):
                           ("导出", self._export_menu), ("图书列表", self._open_book_list),
                           ("出入库记录", self._open_logs), ("分类管理", self._open_category_mgr),
                           ("库存预警", self._open_low_stock), ("批量操作", self._open_batch),
-                          ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan),
-                          ("改密码", self._open_change_pwd)]:
+                          ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan)]:
             ttk.Button(top, text=text, command=cmd, bootstyle=OUTLINE).pack(side=RIGHT, padx=2)
 
         # 提示
@@ -859,7 +858,10 @@ class App(ttk.Window):
             isbn_lookup.save_config(cfg)
             messagebox.showinfo("成功", "已保存")
             win.destroy()
-        ttk.Button(win, text="保存", bootstyle=SUCCESS, command=save, width=15).pack(pady=10)
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=10)
+        ttk.Button(btn_row, text="保存", bootstyle=SUCCESS, command=save, width=12).pack(side=LEFT, padx=10)
+        ttk.Button(btn_row, text="修改密码", bootstyle=OUTLINE, command=self._open_change_pwd, width=12).pack(side=LEFT, padx=10)
 
     # ── 导出 ──
     def _export_menu(self):
