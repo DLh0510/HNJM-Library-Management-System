@@ -55,6 +55,14 @@ class App(ttk.Window):
         ttk.Label(form, text="用户名", font=("", 11)).grid(row=0, column=0, sticky=W, pady=(0, 3))
         self.user_entry = ttk.Entry(form, width=30, font=("", 13))
         self.user_entry.grid(row=1, column=0, ipady=4)
+        # 记住上次登录的用户名
+        last_user_file = os.path.join(os.path.dirname(__file__), ".last_user")
+        if os.path.exists(last_user_file):
+            try:
+                with open(last_user_file, "r") as f:
+                    self.user_entry.insert(0, f.read().strip())
+            except Exception:
+                pass
         ttk.Label(form, text="密码", font=("", 11)).grid(row=2, column=0, sticky=W, pady=(12, 3))
         self.pwd_entry = ttk.Entry(form, width=30, font=("", 13), show="●")
         self.pwd_entry.grid(row=3, column=0, ipady=4)
@@ -65,6 +73,8 @@ class App(ttk.Window):
         ttk.Label(main, text="© 2026 河南经贸 图书馆信息技术部",
                   foreground="gray", font=("", 9)).pack(pady=(25, 0))
         self.user_entry.focus_set()
+        if self.user_entry.get():
+            self.pwd_entry.focus_set()
 
     def _login(self):
         username = self.user_entry.get().strip()
@@ -75,6 +85,11 @@ class App(ttk.Window):
         user = db.verify_user(username, password)
         if user:
             self.current_user = dict(user)
+            try:
+                with open(os.path.join(os.path.dirname(__file__), ".last_user"), "w") as f:
+                    f.write(username)
+            except Exception:
+                pass
             self.unbind("<Return>")
             self._login_frame.destroy()
             self._enter_main()
@@ -179,6 +194,18 @@ class App(ttk.Window):
             messagebox.showwarning("库存预警", f"以下图书库存不足：\n{names}{extra}")
 
     # ── 扫码 ──
+    def _beep(self, success=True):
+        """系统提示音"""
+        try:
+            if success:
+                self.bell()
+            else:
+                # 连续两声短促提示表示失败
+                self.bell()
+                self.after(150, self.bell)
+        except Exception:
+            pass
+
     def _on_scan(self, event=None):
         isbn = self.scan_entry.get().strip()
         if not isbn:
@@ -186,8 +213,10 @@ class App(ttk.Window):
         self.scan_entry.delete(0, END)
         book = db.find_book_by_isbn(isbn)
         if book:
+            self._beep(True)
             self._open_stock_dialog(book)
         else:
+            self._beep(False)
             self._open_add_book(isbn, auto_lookup=True)
 
     # ── 出入库弹窗 ──
@@ -427,9 +456,57 @@ class App(ttk.Window):
                 db.delete_book(bid)
                 refresh()
 
+        def detail():
+            bid = get_sel()
+            if not bid: return
+            self._open_book_detail(bid)
+
+        tree.bind("<Double-1>", lambda e: detail())
+
+        ttk.Button(bf, text="详情", command=detail).pack(side=LEFT, padx=5)
         ttk.Button(bf, text="编辑", command=edit).pack(side=LEFT, padx=5)
         ttk.Button(bf, text="删除", bootstyle=DANGER, command=delete).pack(side=LEFT, padx=5)
         refresh()
+
+    # ── 图书详情 ──
+    def _open_book_detail(self, book_id):
+        book = db.find_book_by_isbn("")  # placeholder
+        conn = db.get_conn()
+        book = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE b.id=?", (book_id,)).fetchone()
+        conn.close()
+        if not book: return
+
+        win = ttk.Toplevel(self)
+        win.title(f"图书详情 - {book['title']}")
+        win.geometry("700x450")
+        win.lift()
+        win.focus_force()
+
+        info = ttk.Labelframe(win, text="图书信息", padding=10)
+        info.pack(fill=X, padx=15, pady=10)
+        for i, (k, v) in enumerate([
+            ("ISBN", book["isbn"]), ("书名", book["title"]), ("作者", book["author"]),
+            ("出版社", book["publisher"]), ("单价", f"¥{book['price']:.2f}" if book["price"] else "未设置"),
+            ("分类", book["category_name"] or "未分类"),
+            ("库存", str(book["stock"])), ("最低库存", str(book["min_stock"])),
+        ]):
+            col = i % 2 * 2
+            row = i // 2
+            ttk.Label(info, text=f"{k}：", width=8, anchor=E).grid(row=row, column=col, sticky=E, padx=2)
+            ttk.Label(info, text=v, anchor=W).grid(row=row, column=col+1, sticky=W, padx=(0, 15))
+
+        ttk.Label(win, text="出入库历史", font=("", 11, "bold")).pack(anchor=W, padx=15, pady=(5, 0))
+        cols = ("time", "direction", "qty", "operator")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=10)
+        for col, hd, w in zip(cols, ("时间", "类型", "数量", "操作员"), (180, 70, 70, 100)):
+            tree.heading(col, text=hd)
+            tree.column(col, width=w, anchor=W)
+        tree.pack(fill=BOTH, expand=True, padx=15, pady=(0, 10))
+
+        for log in db.get_stock_logs(book_id=book_id, limit=None):
+            tree.insert("", END, values=(
+                log["created_at"], "入库" if log["direction"] == "in" else "出库",
+                log["change"], log["operator"] or ""))
 
     # ── 编辑图书 ──
     def _open_edit_book(self, book_id, vals, on_done=None):
@@ -533,6 +610,26 @@ class App(ttk.Window):
                     log["operator"] or ""))
 
         ttk.Button(sf, text="筛选", bootstyle=PRIMARY, command=refresh).pack(side=LEFT, padx=5)
+
+        def export_filtered():
+            path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
+                                                 initialfile="出入库记录.csv", parent=win)
+            if not path: return
+            import csv
+            d = dir_combo.get()
+            direction = {"入库": "in", "出库": "out"}.get(d)
+            cid = cat_map.get(cat_combo.get())
+            logs = db.get_stock_logs(direction=direction, date_from=from_entry.get().strip() or None,
+                                      date_to=to_entry.get().strip() or None, category_id=cid, limit=None)
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员"])
+                for log in logs:
+                    w.writerow([log["created_at"], log["isbn"], log["title"],
+                                "入库" if log["direction"] == "in" else "出库", log["change"], log["operator"] or ""])
+            messagebox.showinfo("完成", f"已导出 {len(logs)} 条记录", parent=win)
+
+        ttk.Button(sf, text="导出", bootstyle=OUTLINE, command=export_filtered).pack(side=LEFT, padx=5)
         refresh()
 
     # ── 库存预警 ──
