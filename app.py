@@ -107,14 +107,18 @@ class App(ttk.Window):
         self.scan_entry.focus_set()
         self._start_auto_backup()
         self._check_low_stock()
-        self._check_low_stock()
 
     def _setup_style(self):
         style = ttk.Style()
         style.configure("Treeview", rowheight=28)
         style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        # 斑马纹
         style.map("Treeview", background=[("selected", "#0078d7")])
+
+    def _make_window(self, title, geometry):
+        """创建子窗口，自动绑定ESC关闭"""
+        win = self._make_window(title, geometry)
+        win.bind("<Escape>", lambda e: win.destroy())
+        return win
 
     def _apply_stripe(self, tree):
         """给 Treeview 加斑马纹"""
@@ -158,9 +162,9 @@ class App(ttk.Window):
 
         # 最近记录
         ttk.Label(self, text="最近出入库记录", font=("", 12, "bold")).pack(anchor=W, padx=15)
-        cols = ("time", "isbn", "title", "direction", "qty", "operator")
+        cols = ("time", "isbn", "title", "price", "direction", "qty", "operator")
         self.recent_tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
-        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "类型", "数量", "操作员"), (150, 130, 240, 60, 60, 80)):
+        for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "单价", "类型", "数量", "操作员"), (145, 125, 220, 65, 55, 55, 75)):
             self.recent_tree.heading(col, text=hd)
             self.recent_tree.column(col, width=w, anchor=W)
         self.recent_tree.pack(fill=BOTH, expand=True, padx=15, pady=(0, 10))
@@ -180,6 +184,7 @@ class App(ttk.Window):
         for log in db.get_stock_logs(limit=20):
             self.recent_tree.insert("", END, values=(
                 log["created_at"], log["isbn"], log["title"],
+                f"{log['price']:.2f}" if log["price"] else "",
                 "入库" if log["direction"] == "in" else "出库", log["change"],
                 log["operator"] or ""))
         self._apply_stripe(self.recent_tree)
@@ -211,21 +216,39 @@ class App(ttk.Window):
         if not isbn:
             return
         self.scan_entry.delete(0, END)
-        book = db.find_book_by_isbn(isbn)
-        if book:
+        books = db.find_books_by_isbn(isbn)
+        if len(books) > 1:
+            # 多本同ISBN（套装书），弹出选择
             self._beep(True)
-            self._open_stock_dialog(book)
+            self._open_select_book(books)
+        elif len(books) == 1:
+            self._beep(True)
+            self._open_stock_dialog(books[0])
         else:
             self._beep(False)
             self._open_add_book(isbn, auto_lookup=True)
 
+    def _open_select_book(self, books):
+        win = self._make_window("选择图书", "400x300")
+        ttk.Label(win, text="该ISBN有多本图书，请选择：", font=("", 11)).pack(pady=8)
+        listbox = tk.Listbox(win, font=("", 12))
+        listbox.pack(fill=BOTH, expand=True, padx=15, pady=5)
+        for b in books:
+            note = f" ({b['volume_note']})" if b['volume_note'] else ""
+            listbox.insert(END, f"{b['title']}{note} [库存:{b['stock']}]")
+
+        def confirm():
+            sel = listbox.curselection()
+            if not sel: return
+            win.destroy()
+            self._open_stock_dialog(books[sel[0]])
+
+        listbox.bind("<Double-1>", lambda e: confirm())
+        ttk.Button(win, text="确定", bootstyle=PRIMARY, command=confirm).pack(pady=8)
+
     # ── 出入库弹窗 ──
     def _open_stock_dialog(self, book):
-        win = ttk.Toplevel(self)
-        win.title("图书出入库")
-        win.geometry("430x380")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("图书出入库", "430x430")
 
         info = ttk.Labelframe(win, text="图书信息", padding=10)
         info.pack(fill=X, padx=15, pady=10)
@@ -243,13 +266,19 @@ class App(ttk.Window):
         qty_var = tk.IntVar(value=1)
         ttk.Spinbox(op, from_=1, to=9999, textvariable=qty_var, width=8).grid(row=0, column=1, padx=5)
 
+        ttk.Label(op, text="备注：").grid(row=1, column=0, pady=(8,0))
+        remark_entry = ttk.Entry(op, width=25)
+        remark_entry.grid(row=1, column=1, padx=5, pady=(8,0))
+        ttk.Label(op, text="(如：计算机系 张老师)", foreground="gray", font=("", 9)).grid(row=2, column=1, sticky=W)
+
         def do_stock(direction):
             qty = qty_var.get()
             if qty <= 0:
                 return messagebox.showwarning("提示", "数量必须大于0")
             if direction == "out" and qty > book["stock"]:
                 return messagebox.showwarning("提示", "库存不足")
-            db.update_stock(book["id"], qty, direction, self.current_user.get("display_name",""))
+            remark = remark_entry.get().strip()
+            db.update_stock(book["id"], qty, direction, self.current_user.get("display_name",""), remark)
             messagebox.showinfo("成功", f"{'入库' if direction == 'in' else '出库'} {qty} 本")
             win.destroy()
             self._refresh_recent()
@@ -261,11 +290,7 @@ class App(ttk.Window):
 
     # ── 新增图书 ──
     def _open_add_book(self, isbn="", auto_lookup=False):
-        win = ttk.Toplevel(self)
-        win.title("新增图书")
-        win.geometry("440x430")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("新增图书", "440x480")
 
         fields = {}
         for i, (label, key) in enumerate([("ISBN", "isbn"), ("书名", "title"), ("作者", "author"), ("出版社", "publisher")]):
@@ -297,6 +322,10 @@ class App(ttk.Window):
         qty_var = tk.IntVar(value=1)
         ttk.Spinbox(win, from_=1, to=9999, textvariable=qty_var, width=28).grid(row=7, column=1, padx=10, pady=4)
 
+        ttk.Label(win, text="册/备注：").grid(row=8, column=0, padx=10, pady=4, sticky=E)
+        vol_entry = ttk.Entry(win, width=30)
+        vol_entry.grid(row=8, column=1, padx=10, pady=4)
+
         def do_lookup():
             status_label.config(text="查询中...")
             def fetch():
@@ -319,8 +348,11 @@ class App(ttk.Window):
             title = fields["title"].get().strip()
             if not fields["isbn"].get().strip() or not title:
                 return messagebox.showwarning("提示", "ISBN和书名必填")
-            qty = qty_var.get()
-            if qty <= 0:
+            try:
+                qty = int(qty_var.get())
+            except (ValueError, tk.TclError):
+                return messagebox.showwarning("提示", "入库数量请填写数字")
+            if qty < 1:
                 return messagebox.showwarning("提示", "入库数量必须大于0")
             cat_id = cat_map.get(cat_combo.get())
             try:
@@ -329,7 +361,7 @@ class App(ttk.Window):
                 price = 0
             try:
                 db.add_book(fields["isbn"].get().strip(), title, fields["author"].get().strip(),
-                            fields["publisher"].get().strip(), cat_id, price, min_var.get())
+                            fields["publisher"].get().strip(), cat_id, price, min_var.get(), vol_entry.get().strip())
                 book = db.find_book_by_isbn(fields["isbn"].get().strip())
                 db.update_stock(book["id"], qty, "in", self.current_user.get("display_name",""))
                 messagebox.showinfo("成功", f"图书已添加，入库 {qty} 本")
@@ -338,16 +370,12 @@ class App(ttk.Window):
             except Exception as ex:
                 messagebox.showerror("错误", str(ex))
 
-        ttk.Button(win, text="查询ISBN", command=do_lookup).grid(row=8, column=0, pady=12)
-        ttk.Button(win, text="保存并入库", bootstyle=SUCCESS, command=save).grid(row=8, column=1, pady=12)
+        ttk.Button(win, text="查询ISBN", command=do_lookup).grid(row=9, column=0, pady=12)
+        ttk.Button(win, text="保存并入库", bootstyle=SUCCESS, command=save).grid(row=9, column=1, pady=12)
 
     # ── 分类管理 ──
     def _open_category_mgr(self):
-        win = ttk.Toplevel(self)
-        win.title("分类管理")
-        win.geometry("350x400")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("分类管理", "350x400")
 
         listbox = tk.Listbox(win, font=("", 12))
         listbox.pack(fill=BOTH, expand=True, padx=10, pady=10)
@@ -455,6 +483,7 @@ class App(ttk.Window):
             if messagebox.askyesno("确认", f"确定删除《{vals[1]}》？", parent=win):
                 db.delete_book(bid)
                 refresh()
+                self._refresh_recent()
 
         def detail():
             bid = get_sel()
@@ -476,11 +505,7 @@ class App(ttk.Window):
         conn.close()
         if not book: return
 
-        win = ttk.Toplevel(self)
-        win.title(f"图书详情 - {book['title']}")
-        win.geometry("700x450")
-        win.lift()
-        win.focus_force()
+        win = self._make_window(f"图书详情 - {book['title']}", "700x450")
 
         info = ttk.Labelframe(win, text="图书信息", padding=10)
         info.pack(fill=X, padx=15, pady=10)
@@ -510,11 +535,7 @@ class App(ttk.Window):
 
     # ── 编辑图书 ──
     def _open_edit_book(self, book_id, vals, on_done=None):
-        win = ttk.Toplevel(self)
-        win.title("编辑图书")
-        win.geometry("420x330")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("编辑图书", "420x380")
 
         fields = {}
         for i, (label, key, val) in enumerate([
@@ -544,6 +565,10 @@ class App(ttk.Window):
         min_var = tk.IntVar(value=int(vals[7] or 0))
         ttk.Spinbox(win, from_=0, to=9999, textvariable=min_var, width=28).grid(row=6, column=1, padx=10, pady=4)
 
+        ttk.Label(win, text="当前库存：").grid(row=7, column=0, padx=10, pady=4, sticky=E)
+        stock_var = tk.IntVar(value=int(vals[6] or 0))
+        ttk.Spinbox(win, from_=0, to=99999, textvariable=stock_var, width=28).grid(row=7, column=1, padx=10, pady=4)
+
         def save():
             title = fields["title"].get().strip()
             if not title:
@@ -555,11 +580,17 @@ class App(ttk.Window):
                 price = 0
             db.update_book(book_id, title, fields["author"].get().strip(),
                            fields["publisher"].get().strip(), cat_id, price, min_var.get())
+            # 库存调整
+            try:
+                new_stock = int(stock_var.get())
+                db.set_stock(book_id, new_stock, self.current_user.get("display_name",""))
+            except Exception:
+                pass
             messagebox.showinfo("成功", "已更新", parent=win)
             win.destroy()
             if on_done: on_done()
 
-        ttk.Button(win, text="保存", bootstyle=SUCCESS, command=save, width=15).grid(row=7, column=0, columnspan=2, pady=12)
+        ttk.Button(win, text="保存", bootstyle=SUCCESS, command=save, width=15).grid(row=8, column=0, columnspan=2, pady=12)
 
     # ── 出入库记录（带筛选） ──
     def _open_logs(self):
@@ -615,19 +646,14 @@ class App(ttk.Window):
             path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
                                                  initialfile="出入库记录.csv", parent=win)
             if not path: return
-            import csv
             d = dir_combo.get()
             direction = {"入库": "in", "出库": "out"}.get(d)
             cid = cat_map.get(cat_combo.get())
-            logs = db.get_stock_logs(direction=direction, date_from=from_entry.get().strip() or None,
-                                      date_to=to_entry.get().strip() or None, category_id=cid, limit=None)
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f)
-                w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员"])
-                for log in logs:
-                    w.writerow([log["created_at"], log["isbn"], log["title"],
-                                "入库" if log["direction"] == "in" else "出库", log["change"], log["operator"] or ""])
-            messagebox.showinfo("完成", f"已导出 {len(logs)} 条记录", parent=win)
+            count = db.export_logs_csv(path, direction=direction,
+                                        date_from=from_entry.get().strip() or None,
+                                        date_to=to_entry.get().strip() or None,
+                                        category_id=cid)
+            messagebox.showinfo("完成", f"已导出 {count} 条记录", parent=win)
 
         ttk.Button(sf, text="导出", bootstyle=OUTLINE, command=export_filtered).pack(side=LEFT, padx=5)
         refresh()
@@ -654,11 +680,7 @@ class App(ttk.Window):
 
     # ── 批量操作 ──
     def _open_batch(self):
-        win = ttk.Toplevel(self)
-        win.title("批量出入库")
-        win.geometry("650x480")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("批量出入库", "650x480")
 
         ttk.Label(win, text="连续扫码添加到列表，最后统一提交", font=("", 11)).pack(pady=5)
 
@@ -709,23 +731,24 @@ class App(ttk.Window):
         def submit(direction):
             if not batch_list:
                 return messagebox.showwarning("提示", "列表为空")
-            ok, fail = 0, 0
+            ok, fail_names = 0, []
             for item in batch_list:
                 book = item["book"]
                 if not book:
-                    fail += 1
+                    fail_names.append(item["isbn"])
                     continue
                 if direction == "out" and item["qty"] > book["stock"]:
-                    fail += 1
+                    fail_names.append(f"{book['title']}(库存不足)")
                     continue
                 db.update_stock(book["id"], item["qty"], direction, self.current_user.get("display_name",""))
                 ok += 1
-            msg = f"成功 {ok} 本"
-            if fail:
-                msg += f"，失败 {fail} 本（未录入或库存不足）"
+            msg = f"成功处理 {ok} 本"
+            if fail_names:
+                msg += f"\n\n以下 {len(fail_names)} 本跳过：\n" + "\n".join(fail_names[:10])
             messagebox.showinfo("完成", msg)
-            win.destroy()
-            self._refresh_recent()
+            if ok > 0:
+                win.destroy()
+                self._refresh_recent()
 
         ttk.Button(bf, text="全部入库", bootstyle=SUCCESS, command=lambda: submit("in")).pack(side=RIGHT, padx=5)
         ttk.Button(bf, text="全部出库", bootstyle=DANGER, command=lambda: submit("out")).pack(side=RIGHT, padx=5)
@@ -733,11 +756,7 @@ class App(ttk.Window):
 
     # ── 盘点 ──
     def _open_inventory(self):
-        win = ttk.Toplevel(self)
-        win.title("库存盘点")
-        win.geometry("700x500")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("库存盘点", "700x500")
 
         ttk.Label(win, text="逐本扫码，输入实际数量，与系统库存对比", font=("", 11)).pack(pady=5)
 
@@ -819,11 +838,7 @@ class App(ttk.Window):
         url = mobile_scan.start(on_isbn, on_price)
         self.after(200, poll_queue)
 
-        win = ttk.Toplevel(self)
-        win.title("手机扫码")
-        win.geometry("380x420")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("手机扫码", "380x420")
 
         ttk.Label(win, text="用手机扫描下方二维码", font=("", 13)).pack(pady=(15, 5))
         ttk.Label(win, text="打开网页后即可扫描图书条码", foreground="gray").pack()
@@ -840,21 +855,22 @@ class App(ttk.Window):
             ttk.Label(win, text=url, font=("", 14, "bold"), foreground="blue").pack(pady=20)
 
         ttk.Label(win, text=f"或手动访问：{url}", foreground="gray", font=("", 10)).pack()
-        ttk.Label(win, text="手机和电脑需在同一WiFi下", foreground="orange", font=("", 10)).pack(pady=5)
-        ttk.Label(win, text="首次打开会提示证书不安全，点「继续访问」即可", foreground="gray", font=("", 9)).pack()
+        ttk.Label(win, text="⚠ 手机和电脑必须连接同一个WiFi才能使用！", foreground="red", font=("", 11, "bold")).pack(pady=5)
+        ttk.Label(win, text=f"当前电脑IP: {mobile_scan.get_local_ip()}", foreground="orange", font=("", 10)).pack()
+        ttk.Label(win, text="首次打开会提示证书不安全，点「继续访问」即可", foreground="gray", font=("", 9)).pack(pady=3)
 
     def _handle_mobile_isbn(self, isbn):
-        # 防止重复弹窗
         if hasattr(self, '_mobile_processing') and self._mobile_processing:
             return
         self._mobile_processing = True
         print(f"[手机扫码] 收到ISBN: {isbn}")
-        book = db.find_book_by_isbn(isbn)
-        if book:
-            self._open_stock_dialog(book)
+        books = db.find_books_by_isbn(isbn)
+        if len(books) > 1:
+            self._open_select_book(books)
+        elif len(books) == 1:
+            self._open_stock_dialog(books[0])
         else:
             self._open_add_book(isbn, auto_lookup=True)
-        # 2秒后允许下一次
         self.after(2000, lambda: setattr(self, '_mobile_processing', False))
 
     def _handle_mobile_price(self, price):
@@ -868,11 +884,7 @@ class App(ttk.Window):
 
     # ── 修改密码 ──
     def _open_change_pwd(self):
-        win = ttk.Toplevel(self)
-        win.title("修改密码")
-        win.geometry("350x220")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("修改密码", "350x220")
 
         ttk.Label(win, text="旧密码：").grid(row=0, column=0, padx=10, pady=8, sticky=E)
         old_e = ttk.Entry(win, show="●", width=25)
@@ -904,11 +916,7 @@ class App(ttk.Window):
 
     # ── 设置 ──
     def _open_settings(self):
-        win = ttk.Toplevel(self)
-        win.title("设置 - ISBN 查询数据源")
-        win.geometry("400x350")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("设置 - ISBN 查询数据源", "400x350")
 
         ttk.Label(win, text="调整优先级（上方优先），勾选启用", font=("", 11)).pack(padx=10, pady=8)
         cfg = isbn_lookup.load_config()
@@ -962,11 +970,7 @@ class App(ttk.Window):
 
     # ── 导出 ──
     def _export_menu(self):
-        win = ttk.Toplevel(self)
-        win.title("导出数据")
-        win.geometry("300x150")
-        win.lift()
-        win.focus_force()
+        win = self._make_window("导出数据", "300x150")
 
         def export(fn, name):
             path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],

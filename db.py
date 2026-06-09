@@ -25,7 +25,7 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS book (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            isbn TEXT NOT NULL UNIQUE,
+            isbn TEXT NOT NULL,
             title TEXT NOT NULL,
             author TEXT DEFAULT '',
             publisher TEXT DEFAULT '',
@@ -33,6 +33,7 @@ def init_db():
             category_id INTEGER,
             stock INTEGER DEFAULT 0,
             min_stock INTEGER DEFAULT 0,
+            volume_note TEXT DEFAULT '',
             FOREIGN KEY (category_id) REFERENCES category(id)
         );
         CREATE TABLE IF NOT EXISTS stock_log (
@@ -41,6 +42,7 @@ def init_db():
             change INTEGER NOT NULL,
             direction TEXT NOT NULL CHECK(direction IN ('in','out')),
             operator TEXT DEFAULT '',
+            remark TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (book_id) REFERENCES book(id)
         );
@@ -51,21 +53,24 @@ def init_db():
             display_name TEXT DEFAULT ''
         );
     """)
-    for col, typ in [("price", "REAL DEFAULT 0"), ("min_stock", "INTEGER DEFAULT 0")]:
+    # 兼容旧数据库新增列
+    for col, typ in [("price", "REAL DEFAULT 0"), ("min_stock", "INTEGER DEFAULT 0"),
+                     ("volume_note", "TEXT DEFAULT ''")]:
         try:
             c.execute(f"ALTER TABLE book ADD COLUMN {col} {typ}")
         except Exception:
             pass
-    try:
-        c.execute("ALTER TABLE stock_log ADD COLUMN operator TEXT DEFAULT ''")
-    except Exception:
-        pass
+    for col, typ in [("operator", "TEXT DEFAULT ''"), ("remark", "TEXT DEFAULT ''")]:
+        try:
+            c.execute(f"ALTER TABLE stock_log ADD COLUMN {col} {typ}")
+        except Exception:
+            pass
+    # 移除 isbn UNIQUE 约束不影响旧表，新表已去掉
     c.executescript("""
         CREATE INDEX IF NOT EXISTS idx_book_isbn ON book(isbn);
         CREATE INDEX IF NOT EXISTS idx_log_created ON stock_log(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_log_book ON stock_log(book_id);
     """)
-    # 初始账号
     for user, pwd, name in [("admin", "123456", "管理员"), ("yu", "123456", "于老师"),
                              ("li", "123456", "李老师"), ("han", "123456", "韩老师")]:
         try:
@@ -104,22 +109,48 @@ def rename_category(cid, new_name):
 
 # ── 图书 ──
 def find_book_by_isbn(isbn):
+    """按ISBN查找图书，如有多本（套装）返回第一本"""
     conn = get_conn()
     row = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE b.isbn=?", (isbn,)).fetchone()
     conn.close()
     return row
 
-def add_book(isbn, title, author, publisher, category_id, price=0, min_stock=0):
+def find_books_by_isbn(isbn):
+    """按ISBN查找所有图书（套装书多册）"""
     conn = get_conn()
-    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock) VALUES(?,?,?,?,?,?,0,?)",
-                 (isbn, title, author, publisher, price, category_id, min_stock))
+    rows = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id WHERE b.isbn=? ORDER BY b.volume_note", (isbn,)).fetchall()
+    conn.close()
+    return rows
+
+def add_book(isbn, title, author, publisher, category_id, price=0, min_stock=0, volume_note=""):
+    conn = get_conn()
+    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock,volume_note) VALUES(?,?,?,?,?,?,0,?,?)",
+                 (isbn, title, author, publisher, price, category_id, min_stock, volume_note))
     conn.commit()
     conn.close()
 
-def update_book(book_id, title, author, publisher, category_id, price=0, min_stock=0):
+def update_book(book_id, title, author, publisher, category_id, price=0, min_stock=0, volume_note=""):
     conn = get_conn()
-    conn.execute("UPDATE book SET title=?, author=?, publisher=?, price=?, category_id=?, min_stock=? WHERE id=?",
-                 (title, author, publisher, price, category_id, min_stock, book_id))
+    conn.execute("UPDATE book SET title=?, author=?, publisher=?, price=?, category_id=?, min_stock=?, volume_note=? WHERE id=?",
+                 (title, author, publisher, price, category_id, min_stock, volume_note, book_id))
+    conn.commit()
+    conn.close()
+
+def set_stock(book_id, new_stock, operator=""):
+    """直接设置库存数量"""
+    conn = get_conn()
+    old = conn.execute("SELECT stock FROM book WHERE id=?", (book_id,)).fetchone()
+    if old is None:
+        conn.close()
+        return
+    diff = new_stock - old["stock"]
+    if diff == 0:
+        conn.close()
+        return
+    conn.execute("UPDATE book SET stock=? WHERE id=?", (new_stock, book_id))
+    direction = "in" if diff > 0 else "out"
+    conn.execute("INSERT INTO stock_log(book_id, change, direction, operator, remark, created_at) VALUES(?,?,?,?,?,datetime('now','localtime'))",
+                 (book_id, abs(diff), direction, operator, "库存调整"))
     conn.commit()
     conn.close()
 
@@ -130,18 +161,18 @@ def delete_book(book_id):
     conn.commit()
     conn.close()
 
-def update_stock(book_id, qty, direction, operator=""):
+def update_stock(book_id, qty, direction, operator="", remark=""):
     conn = get_conn()
     sign = qty if direction == "in" else -qty
     conn.execute("UPDATE book SET stock = stock + ? WHERE id=?", (sign, book_id))
-    conn.execute("INSERT INTO stock_log(book_id, change, direction, operator, created_at) VALUES(?,?,?,?,datetime('now','localtime'))",
-                 (book_id, qty, direction, operator))
+    conn.execute("INSERT INTO stock_log(book_id, change, direction, operator, remark, created_at) VALUES(?,?,?,?,?,datetime('now','localtime'))",
+                 (book_id, qty, direction, operator, remark))
     conn.commit()
     conn.close()
 
 def get_all_books():
     conn = get_conn()
-    rows = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title").fetchall()
+    rows = conn.execute("SELECT b.*, c.name as category_name FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title, b.volume_note").fetchall()
     conn.close()
     return rows
 
@@ -156,7 +187,7 @@ def search_books(keyword="", category_id=None):
     if category_id:
         sql += " AND b.category_id=?"
         params.append(category_id)
-    sql += " ORDER BY b.title"
+    sql += " ORDER BY b.title, b.volume_note"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return rows
@@ -171,7 +202,7 @@ def get_low_stock_books():
 # ── 出入库记录 ──
 def get_stock_logs(book_id=None, limit=200, direction=None, date_from=None, date_to=None, category_id=None):
     conn = get_conn()
-    sql = "SELECT l.*, b.title, b.isbn FROM stock_log l JOIN book b ON l.book_id=b.id"
+    sql = "SELECT l.*, b.title, b.isbn, b.price FROM stock_log l JOIN book b ON l.book_id=b.id"
     conditions, params = [], []
     if book_id:
         conditions.append("l.book_id=?")
@@ -202,25 +233,25 @@ def get_stock_logs(book_id=None, limit=200, direction=None, date_from=None, date
 # ── 导出 ──
 def export_books_csv(filepath):
     conn = get_conn()
-    rows = conn.execute("SELECT b.isbn, b.title, b.author, b.publisher, b.price, COALESCE(c.name,'') as category, b.stock, b.min_stock FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title").fetchall()
+    rows = conn.execute("SELECT b.isbn, b.title, b.author, b.publisher, b.price, COALESCE(c.name,'') as category, b.stock, b.min_stock, b.volume_note FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title, b.volume_note").fetchall()
     conn.close()
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存"])
+        w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存", "备注"])
         for r in rows:
-            w.writerow([r["isbn"], r["title"], r["author"], r["publisher"], r["price"], r["category"], r["stock"], r["min_stock"]])
+            w.writerow([r["isbn"], r["title"], r["author"], r["publisher"],
+                        f"{r['price']:.2f}", r["category"], r["stock"], r["min_stock"], r["volume_note"]])
     return len(rows)
 
-def export_logs_csv(filepath):
-    conn = get_conn()
-    rows = conn.execute("SELECT l.created_at, b.isbn, b.title, l.direction, l.change, l.operator FROM stock_log l JOIN book b ON l.book_id=b.id ORDER BY l.created_at DESC").fetchall()
-    conn.close()
+def export_logs_csv(filepath, direction=None, date_from=None, date_to=None, category_id=None):
+    logs = get_stock_logs(direction=direction, date_from=date_from, date_to=date_to, category_id=category_id, limit=None)
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员"])
-        for r in rows:
-            w.writerow([r["created_at"], r["isbn"], r["title"], "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"]])
-    return len(rows)
+        w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员", "备注"])
+        for r in logs:
+            w.writerow([r["created_at"], r["isbn"], r["title"],
+                        "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"], r["remark"]])
+    return len(logs)
 
 
 # ── 备份 ──
