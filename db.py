@@ -124,10 +124,12 @@ def find_books_by_isbn(isbn):
 
 def add_book(isbn, title, author, publisher, category_id, price=0, min_stock=0, volume_note=""):
     conn = get_conn()
-    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock,volume_note) VALUES(?,?,?,?,?,?,0,?,?)",
+    cur = conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock,volume_note) VALUES(?,?,?,?,?,?,0,?,?)",
                  (isbn, title, author, publisher, price, category_id, min_stock, volume_note))
+    new_id = cur.lastrowid
     conn.commit()
     conn.close()
+    return new_id
 
 def update_book(book_id, title, author, publisher, category_id, price=0, min_stock=0, volume_note=""):
     conn = get_conn()
@@ -240,7 +242,7 @@ def export_books_csv(filepath):
         w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存", "备注"])
         for r in rows:
             w.writerow([r["isbn"], r["title"], r["author"], r["publisher"],
-                        f"{r['price']:.2f}", r["category"], r["stock"], r["min_stock"], r["volume_note"]])
+                        f"{r['price'] or 0:.2f}", r["category"], r["stock"], r["min_stock"], r["volume_note"]])
     return len(rows)
 
 def export_logs_csv(filepath, direction=None, date_from=None, date_to=None, category_id=None):

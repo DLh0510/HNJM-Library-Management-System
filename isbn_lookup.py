@@ -112,7 +112,60 @@ def _openlibrary(isbn):
     }
 
 
-# ── 配置管理 ──
+@provider("douban", "豆瓣图书")
+def _douban_books(isbn):
+    """抓取豆瓣图书信息，适合中文教材/课外书"""
+    url = f"https://book.douban.com/isbn/{isbn}"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    title_m = re.search(r'<span property="v:itemreviewed">([^<]+)</span>', html)
+    if not title_m:
+        title_m = re.search(r'<title>([^<(]+)', html)
+    title = title_m.group(1).strip() if title_m else ""
+    if not title or "豆瓣" in title:
+        return None
+
+    author = ""
+    author_m = re.search(r'作者</span>.*?href="[^"]*">([^<]+)</a>', html, re.DOTALL)
+    if author_m:
+        author = author_m.group(1).strip()
+
+    publisher = ""
+    pub_m = re.search(r'出版社:</span>\s*<a[^>]*>([^<]+)</a>', html)
+    if pub_m:
+        publisher = pub_m.group(1).strip()
+
+    return {"title": title, "author": author, "publisher": publisher, "clc": ""}
+
+
+@provider("isbn_cn", "ISBN中国")
+def _isbn_cn(isbn):
+    """查询isbn.cn"""
+    url = f"http://www.isbn.cn/Search/isbn/{isbn}"
+    try:
+        html = _fetch_html(url, timeout=8)
+    except Exception:
+        return None
+    title_m = re.search(r'<title>([^<|]+)', html)
+    title = title_m.group(1).strip() if title_m else ""
+    if not title or len(title) < 2:
+        return None
+    author_m = re.search(r'作\s*者[：:]\s*</[^>]+>\s*([^\s<，；]+)', html)
+    author = author_m.group(1).strip() if author_m else ""
+    pub_m = re.search(r'出版社[：:]\s*</[^>]+>\s*([^\s<，；]+)', html)
+    publisher = pub_m.group(1).strip() if pub_m else ""
+    return {"title": title, "author": author, "publisher": publisher, "clc": ""}
+
+
+
 
 def _default_config():
     return [{"key": k, "enabled": True} for k in PROVIDERS]
