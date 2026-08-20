@@ -228,7 +228,109 @@ class App(ttk.Window):
             self._open_stock_dialog(books[0])
         else:
             self._beep(False)
+            # 新书：询问用户是录入还是快速出库
+            self._ask_new_book_action(isbn)
+
+    def _ask_new_book_action(self, isbn):
+        """扫到新书时询问：录入新书还是快速出库"""
+        win = self._make_window("未录入图书", "360x180")
+
+        ttk.Label(win, text=f"ISBN: {isbn}", font=("", 11, "bold"), foreground="#0066b3").pack(pady=(15, 5))
+        ttk.Label(win, text="该图书未录入系统，请选择操作：", font=("", 11)).pack(pady=5)
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(pady=20)
+
+        def do_add():
+            win.destroy()
             self._open_add_book(isbn, auto_lookup=True)
+
+        def do_quick_out():
+            win.destroy()
+            self._open_quick_checkout(isbn)
+
+        ttk.Button(btn_frame, text="录入新书", bootstyle=PRIMARY, width=12,
+                   command=do_add).pack(side=LEFT, padx=10)
+        ttk.Button(btn_frame, text="快速出库", bootstyle=SUCCESS, width=12,
+                   command=do_quick_out).pack(side=LEFT, padx=10)
+
+    def _open_quick_checkout(self, isbn):
+        """快速出库：新书直接登记出库，不需要先入库"""
+        win = self._make_window("快速出库", "420x380")
+
+        ttk.Label(win, text="快速出库（图书将以零库存录入系统）",
+                  font=("", 11), foreground="gray").pack(pady=(10, 15))
+
+        form = ttk.Frame(win)
+        form.pack(padx=20)
+
+        ttk.Label(form, text="ISBN：", width=10, anchor=E).grid(row=0, column=0, pady=6, sticky=E)
+        isbn_label = ttk.Label(form, text=isbn, anchor=W, font=("", 10, "bold"))
+        isbn_label.grid(row=0, column=1, pady=6, sticky=W, padx=5)
+
+        ttk.Label(form, text="书名：", width=10, anchor=E).grid(row=1, column=0, pady=6, sticky=E)
+        title_entry = ttk.Entry(form, width=30)
+        title_entry.grid(row=1, column=1, pady=6, padx=5)
+
+        ttk.Label(form, text="出库数量：", width=10, anchor=E).grid(row=2, column=0, pady=6, sticky=E)
+        qty_var = tk.IntVar(value=1)
+        ttk.Spinbox(form, from_=1, to=9999, textvariable=qty_var, width=28).grid(row=2, column=1, pady=6, padx=5)
+
+        ttk.Label(form, text="所属系部：", width=10, anchor=E).grid(row=3, column=0, pady=6, sticky=E)
+        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
+                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
+        dept_combo = ttk.Combobox(form, values=dept_list, width=28)
+        dept_combo.grid(row=3, column=1, pady=6, padx=5)
+
+        ttk.Label(form, text="老师姓名：", width=10, anchor=E).grid(row=4, column=0, pady=6, sticky=E)
+        teacher_entry = ttk.Entry(form, width=30)
+        teacher_entry.grid(row=4, column=1, pady=6, padx=5)
+
+        # 自动查询书名
+        status_label = ttk.Label(win, text="正在查询图书信息...", foreground="gray", font=("", 9))
+        status_label.pack(pady=5)
+
+        def auto_lookup():
+            info = isbn_lookup.lookup(isbn)
+            def update():
+                if info and info.get("title"):
+                    title_entry.insert(0, info["title"])
+                    status_label.config(text=f"已自动填充书名（{info.get('_source','')}）", foreground="green")
+                else:
+                    status_label.config(text="未查到书名，请手动输入", foreground="orange")
+            self.after(0, update)
+
+        threading.Thread(target=auto_lookup, daemon=True).start()
+
+        def submit():
+            title = title_entry.get().strip()
+            if not title:
+                return messagebox.showwarning("提示", "书名必填", parent=win)
+            try:
+                qty = int(qty_var.get())
+            except (ValueError, tk.TclError):
+                return messagebox.showwarning("提示", "出库数量必须是数字", parent=win)
+            if qty < 1:
+                return messagebox.showwarning("提示", "出库数量必须大于0", parent=win)
+
+            dept = dept_combo.get().strip()
+            teacher = teacher_entry.get().strip()
+            remark = " ".join(filter(None, [dept, teacher]))
+
+            # 创建图书记录（库存为0，分类未指定）
+            try:
+                book_id = db.add_book(isbn, title, "", "", None, 0, 0, "")
+                # 直接出库（库存会变负数）
+                db.update_stock(book_id, qty, "out", self.current_user.get("display_name", ""), remark)
+                messagebox.showinfo("成功", f"已登记出库 {qty} 本\n（该图书已录入系统，当前库存：-{qty}）", parent=win)
+                win.destroy()
+                self._refresh_recent()
+                self._refresh_stats()
+            except Exception as e:
+                messagebox.showerror("错误", f"操作失败：{e}", parent=win)
+
+        ttk.Button(win, text="确认出库", bootstyle=SUCCESS, width=15,
+                   command=submit).pack(pady=(15, 10))
 
     def _open_select_book(self, books):
         win = self._make_window("选择图书", "400x300")
