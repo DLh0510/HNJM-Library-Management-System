@@ -256,7 +256,7 @@ class App(ttk.Window):
 
     def _open_quick_checkout(self, isbn):
         """快速出库：新书直接登记出库，不需要先入库"""
-        win = self._make_window("快速出库", "420x380")
+        win = self._make_window("快速出库", "450x560")
 
         ttk.Label(win, text="快速出库（图书将以零库存录入系统）",
                   font=("", 11), foreground="gray").pack(pady=(10, 15))
@@ -264,40 +264,62 @@ class App(ttk.Window):
         form = ttk.Frame(win)
         form.pack(padx=20)
 
-        ttk.Label(form, text="ISBN：", width=10, anchor=E).grid(row=0, column=0, pady=6, sticky=E)
+        ttk.Label(form, text="ISBN：", width=10, anchor=E).grid(row=0, column=0, pady=5, sticky=E)
         isbn_label = ttk.Label(form, text=isbn, anchor=W, font=("", 10, "bold"))
-        isbn_label.grid(row=0, column=1, pady=6, sticky=W, padx=5)
+        isbn_label.grid(row=0, column=1, pady=5, sticky=W, padx=5)
 
-        ttk.Label(form, text="书名：", width=10, anchor=E).grid(row=1, column=0, pady=6, sticky=E)
-        title_entry = ttk.Entry(form, width=30)
-        title_entry.grid(row=1, column=1, pady=6, padx=5)
+        ttk.Label(form, text="书名：", width=10, anchor=E).grid(row=1, column=0, pady=5, sticky=E)
+        title_entry = ttk.Entry(form, width=32)
+        title_entry.grid(row=1, column=1, pady=5, padx=5)
 
-        ttk.Label(form, text="出库数量：", width=10, anchor=E).grid(row=2, column=0, pady=6, sticky=E)
+        ttk.Label(form, text="作者：", width=10, anchor=E).grid(row=2, column=0, pady=5, sticky=E)
+        author_entry = ttk.Entry(form, width=32)
+        author_entry.grid(row=2, column=1, pady=5, padx=5)
+
+        ttk.Label(form, text="出版社：", width=10, anchor=E).grid(row=3, column=0, pady=5, sticky=E)
+        publisher_entry = ttk.Entry(form, width=32)
+        publisher_entry.grid(row=3, column=1, pady=5, padx=5)
+
+        ttk.Label(form, text="定价(元)：", width=10, anchor=E).grid(row=4, column=0, pady=5, sticky=E)
+        price_var = tk.DoubleVar(value=0)
+        ttk.Entry(form, textvariable=price_var, width=32).grid(row=4, column=1, pady=5, padx=5)
+
+        ttk.Label(form, text="出库数量：", width=10, anchor=E).grid(row=5, column=0, pady=5, sticky=E)
         qty_var = tk.IntVar(value=1)
-        ttk.Spinbox(form, from_=1, to=9999, textvariable=qty_var, width=28).grid(row=2, column=1, pady=6, padx=5)
+        ttk.Spinbox(form, from_=1, to=9999, textvariable=qty_var, width=30).grid(row=5, column=1, pady=5, padx=5)
 
-        ttk.Label(form, text="所属系部：", width=10, anchor=E).grid(row=3, column=0, pady=6, sticky=E)
+        ttk.Label(form, text="所属系部：", width=10, anchor=E).grid(row=6, column=0, pady=5, sticky=E)
         dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
                      "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
-        dept_combo = ttk.Combobox(form, values=dept_list, width=28)
-        dept_combo.grid(row=3, column=1, pady=6, padx=5)
+        dept_combo = ttk.Combobox(form, values=dept_list, width=30)
+        dept_combo.grid(row=6, column=1, pady=5, padx=5)
 
-        ttk.Label(form, text="老师姓名：", width=10, anchor=E).grid(row=4, column=0, pady=6, sticky=E)
-        teacher_entry = ttk.Entry(form, width=30)
-        teacher_entry.grid(row=4, column=1, pady=6, padx=5)
+        ttk.Label(form, text="老师姓名：", width=10, anchor=E).grid(row=7, column=0, pady=5, sticky=E)
+        teacher_entry = ttk.Entry(form, width=32)
+        teacher_entry.grid(row=7, column=1, pady=5, padx=5)
 
-        # 自动查询书名
+        # 自动查询图书信息
         status_label = ttk.Label(win, text="正在查询图书信息...", foreground="gray", font=("", 9))
         status_label.pack(pady=5)
 
         def auto_lookup():
             info = isbn_lookup.lookup(isbn)
             def update():
-                if info and info.get("title"):
-                    title_entry.insert(0, info["title"])
-                    status_label.config(text=f"已自动填充书名（{info.get('_source','')}）", foreground="green")
+                if info:
+                    if info.get("title"):
+                        title_entry.insert(0, info["title"])
+                    if info.get("author"):
+                        author_entry.insert(0, info["author"])
+                    if info.get("publisher"):
+                        publisher_entry.insert(0, info["publisher"])
+                    if info.get("price"):
+                        try:
+                            price_var.set(float(info["price"]))
+                        except:
+                            pass
+                    status_label.config(text=f"已自动填充（{info.get('_source','')}）", foreground="green")
                 else:
-                    status_label.config(text="未查到书名，请手动输入", foreground="orange")
+                    status_label.config(text="未查到信息，请手动输入", foreground="orange")
             self.after(0, update)
 
         threading.Thread(target=auto_lookup, daemon=True).start()
@@ -313,13 +335,20 @@ class App(ttk.Window):
             if qty < 1:
                 return messagebox.showwarning("提示", "出库数量必须大于0", parent=win)
 
+            author = author_entry.get().strip()
+            publisher = publisher_entry.get().strip()
+            try:
+                price = float(price_var.get())
+            except:
+                price = 0
+
             dept = dept_combo.get().strip()
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
 
             # 创建图书记录（库存为0，分类未指定）
             try:
-                book_id = db.add_book(isbn, title, "", "", None, 0, 0, "")
+                book_id = db.add_book(isbn, title, author, publisher, None, price, 0, "")
                 # 直接出库（库存会变负数）
                 db.update_stock(book_id, qty, "out", self.current_user.get("display_name", ""), remark)
                 messagebox.showinfo("成功", f"已登记出库 {qty} 本\n（该图书已录入系统，当前库存：-{qty}）", parent=win)

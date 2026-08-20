@@ -204,7 +204,7 @@ def get_low_stock_books():
 # ── 出入库记录 ──
 def get_stock_logs(book_id=None, limit=200, direction=None, date_from=None, date_to=None, category_id=None):
     conn = get_conn()
-    sql = "SELECT l.*, b.title, b.isbn, b.price FROM stock_log l JOIN book b ON l.book_id=b.id"
+    sql = "SELECT l.*, b.title, b.isbn, b.author, b.publisher, b.price FROM stock_log l JOIN book b ON l.book_id=b.id"
     conditions, params = [], []
     if book_id:
         conditions.append("l.book_id=?")
@@ -249,10 +249,18 @@ def export_logs_csv(filepath, direction=None, date_from=None, date_to=None, cate
     logs = get_stock_logs(direction=direction, date_from=date_from, date_to=date_to, category_id=category_id, limit=None)
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["时间", "ISBN", "书名", "类型", "数量", "操作员", "备注"])
+        w.writerow(["时间", "ISBN", "书名", "作者", "出版社", "单价", "类型", "数量", "操作员", "系部", "老师"])
         for r in logs:
-            w.writerow([r["created_at"], r["isbn"], r["title"],
-                        "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"], r["remark"]])
+            # 拆分备注：格式为 "系部 老师"
+            remark = r["remark"] or ""
+            parts = remark.split(" ", 1)
+            dept = parts[0] if len(parts) > 0 else ""
+            teacher = parts[1] if len(parts) > 1 else ""
+
+            w.writerow([r["created_at"], r["isbn"], r["title"], r["author"], r["publisher"],
+                        f"{r['price'] or 0:.2f}",
+                        "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"],
+                        dept, teacher])
     return len(logs)
 
 
