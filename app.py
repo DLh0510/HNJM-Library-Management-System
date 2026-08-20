@@ -269,8 +269,10 @@ class App(ttk.Window):
         ttk.Spinbox(op, from_=1, to=9999, textvariable=qty_var, width=8).grid(row=0, column=1, padx=5, sticky=W)
 
         ttk.Label(op, text="所属系部：").grid(row=1, column=0, pady=(8, 0), sticky=E)
-        dept_entry = ttk.Entry(op, width=22)
-        dept_entry.grid(row=1, column=1, padx=5, pady=(8, 0), sticky=W)
+        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
+                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
+        dept_combo = ttk.Combobox(op, values=dept_list, width=19)
+        dept_combo.grid(row=1, column=1, padx=5, pady=(8, 0), sticky=W)
 
         ttk.Label(op, text="老师姓名：").grid(row=2, column=0, pady=(4, 0), sticky=E)
         teacher_entry = ttk.Entry(op, width=22)
@@ -284,8 +286,9 @@ class App(ttk.Window):
             if qty <= 0:
                 return messagebox.showwarning("提示", "数量必须大于0", parent=win)
             if direction == "out" and qty > book["stock"]:
-                return messagebox.showwarning("提示", "库存不足", parent=win)
-            dept = dept_entry.get().strip()
+                if not messagebox.askyesno("确认", f"当前库存仅 {book['stock']} 本，确定出库 {qty} 本吗？\n（库存将变为负数）", parent=win):
+                    return
+            dept = dept_combo.get().strip()
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
             db.update_stock(book["id"], qty, direction, self.current_user.get("display_name", ""), remark)
@@ -337,8 +340,10 @@ class App(ttk.Window):
         vol_entry.grid(row=8, column=1, padx=10, pady=4)
 
         ttk.Label(win, text="所属系部：").grid(row=9, column=0, padx=10, pady=4, sticky=E)
-        dept_entry = ttk.Entry(win, width=30)
-        dept_entry.grid(row=9, column=1, padx=10, pady=4)
+        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
+                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
+        dept_combo_add = ttk.Combobox(win, values=dept_list, width=27)
+        dept_combo_add.grid(row=9, column=1, padx=10, pady=4)
 
         ttk.Label(win, text="老师姓名：").grid(row=10, column=0, padx=10, pady=4, sticky=E)
         teacher_entry = ttk.Entry(win, width=30)
@@ -377,7 +382,7 @@ class App(ttk.Window):
                 price = price_var.get()
             except Exception:
                 price = 0
-            dept = dept_entry.get().strip()
+            dept = dept_combo_add.get().strip()
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
             try:
@@ -765,7 +770,7 @@ class App(ttk.Window):
 
         def submit(direction):
             if not batch_list:
-                return messagebox.showwarning("提示", "列表为空")
+                return messagebox.showwarning("提示", "列表为空", parent=win)
             ok, fail_names = 0, []
             for item in batch_list:
                 book = item["book"]
@@ -773,13 +778,13 @@ class App(ttk.Window):
                     fail_names.append(item["isbn"])
                     continue
                 if direction == "out" and item["qty"] > book["stock"]:
-                    fail_names.append(f"{book['title']}(库存不足)")
-                    continue
+                    # 批量出库也允许超库存，跳过确认直接出
+                    pass
                 db.update_stock(book["id"], item["qty"], direction, self.current_user.get("display_name",""))
                 ok += 1
             msg = f"成功处理 {ok} 本"
             if fail_names:
-                msg += f"\n\n以下 {len(fail_names)} 本跳过：\n" + "\n".join(fail_names[:10])
+                msg += f"\n\n以下 {len(fail_names)} 本跳过（未录入）：\n" + "\n".join(fail_names[:10])
             messagebox.showinfo("完成", msg, parent=win)
             if ok > 0:
                 win.destroy()
