@@ -13,14 +13,16 @@
 - **套装书支持** — 同ISBN多册分开管理，备注区分
 - **操作员追溯** — 每次操作记录操作员和备注（系别+老师）
 - **数据统计** — 首页看板显示藏书量、今日出入库、预警数
-- **数据导出** — 图书列表和出入库记录导出CSV
+- **数据导入/导出** — 图书列表和出入库记录 CSV 可导出、再导入
+- **记录删除** — 可删除图书或错误的出入库记录，并同步撤销库存变化
+- **机构与出版社选择** — 机构分级选择，出版社可选择或自定义输入
 - **自动备份** — 每小时自动备份数据库，保留最近10份
 
 ## 快速开始
 
 ### Windows 用户
 
-下载 [Releases](https://github.com/DLh0510/HNJM-Library-Management-System/releases) 页面的 `图书出入库管理系统.exe`，双击运行。
+下载 [Releases](https://github.com/DLh0510/HNJM-Library-Management-System/releases) 页面的 `图书出入库管理系统.exe`，双击运行。数据库和配置保存在 Windows 本地应用数据目录，不会出现在桌面；首次运行新版时会自动迁移旧版数据。
 
 ### 源码运行
 
@@ -47,9 +49,9 @@ python app.py
 ├── mobile_scan.py      # 手机扫码Web服务 + OCR
 ├── logo.png            # 系统Logo
 ├── logo.ico            # 程序图标
-├── library.db          # SQLite数据库（运行时生成）
-├── api_config.json     # 数据源优先级配置（运行时生成）
-├── backups/            # 自动备份目录
+├── library.db          # SQLite数据库（运行时生成，不在项目/桌面）
+├── api_config.json     # 数据源配置（运行时生成，不在项目/桌面）
+├── backups/            # 自动备份目录（Windows 本地应用数据目录）
 └── .github/workflows/  # GitHub Actions自动打包
 ```
 

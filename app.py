@@ -22,14 +22,26 @@ def resource_path(filename):
 
 
 def data_path(filename):
-    """可写数据路径：打包后放 exe 同级目录（持久化），源码运行时放项目目录"""
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(__file__)
-    return os.path.join(base, filename)
+    """可写数据路径。"""
+    return os.path.join(db.get_data_dir(), filename)
 
 LOGO_PATH = resource_path("logo.png")
+
+PUBLISHERS = [
+    "中国劳动社会保障出版社", "人民邮电出版社", "高等教育出版社", "机械工业出版社", "电子工业出版社",
+    "清华大学出版社", "科学出版社", "北京大学出版社", "中国人民大学出版社", "化学工业出版社",
+    "中国建筑工业出版社", "中国铁道出版社", "外语教学与研究出版社", "西安电子科技大学出版社", "中国财政经济出版社",
+    "东北财经大学出版社", "中国旅游出版社", "人民卫生出版社", "同济大学出版社", "北京师范大学出版社",
+    "航空工业出版社", "语文出版社",
+]
+
+DEPARTMENTS = {
+    "教学机构": ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
+             "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"],
+    "党群管理机构": ["党政办公室", "纪检监察室", "工会办公室", "项目管理办公室", "人事处", "财务审计处", "资产管理处",
+                 "教务处", "后勤管理服务处", "安全保卫处", "学生处（团委）", "资助管理办公室", "招生就业处"],
+    "教辅机构": ["德育研究中心", "竞赛管理办公室", "技能鉴定中心", "科学研究中心", "图书馆"],
+}
 
 
 class App(ttk.Window):
@@ -108,8 +120,8 @@ class App(ttk.Window):
 
     def _enter_main(self):
         self.title(f"图书出入库管理系统 - {self.current_user.get('display_name', self.current_user['username'])}")
-        self.geometry("1350x750")
-        self.minsize(900, 500)
+        self.geometry("1450x800")
+        self.minsize(1100, 650)
         self.resizable(True, True)
         self._setup_style()
         self._build_ui()
@@ -131,6 +143,33 @@ class App(ttk.Window):
         win.bind("<Escape>", lambda e: win.destroy())
         return win
 
+    def _publisher_input(self, parent, width=30):
+        """可从列表选择，也可直接输入其他出版社。"""
+        return ttk.Combobox(parent, values=PUBLISHERS, width=width)
+
+    def _department_picker(self, parent, row, width=18):
+        ttk.Label(parent, text="机构/科室：", width=10, anchor=E).grid(row=row, column=0, pady=5, sticky=E)
+        frame = ttk.Frame(parent)
+        frame.grid(row=row, column=1, pady=5, padx=5, sticky=W)
+        group = ttk.Combobox(frame, values=list(DEPARTMENTS), width=12, state="readonly")
+        dept = ttk.Combobox(frame, width=width, state="readonly")
+        group.pack(side=LEFT, padx=(0, 5))
+        dept.pack(side=LEFT)
+
+        def update(event=None):
+            dept.config(values=DEPARTMENTS[group.get()])
+            dept.current(0)
+
+        group.bind("<<ComboboxSelected>>", update)
+        group.current(0)
+        update()
+        return group, dept
+
+    @staticmethod
+    def _department_value(picker):
+        group, dept = (item.get().strip() for item in picker)
+        return f"{group}/{dept}" if group and dept else group or dept
+
     def _apply_stripe(self, tree):
         """给 Treeview 加斑马纹"""
         tree.tag_configure("odd", background="#f0f0f0")
@@ -149,7 +188,7 @@ class App(ttk.Window):
         self.scan_entry.bind("<Return>", self._on_scan)
 
         for text, cmd in [("设置", self._open_settings), ("备份", self._manual_backup),
-                          ("导出", self._export_menu), ("图书列表", self._open_book_list),
+                          ("导入", self._import_data), ("导出", self._export_menu), ("图书列表", self._open_book_list),
                           ("出入库记录", self._open_logs), ("分类管理", self._open_category_mgr),
                           ("库存预警", self._open_low_stock), ("批量操作", self._open_batch),
                           ("盘点", self._open_inventory), ("手机扫码", self._open_mobile_scan)]:
@@ -265,7 +304,7 @@ class App(ttk.Window):
 
     def _open_quick_checkout(self, isbn):
         """快速出库：新书直接登记出库，不需要先入库"""
-        win = self._make_window("快速出库", "450x560")
+        win = self._make_window("快速出库", "620x600")
 
         ttk.Label(win, text="快速出库（图书将以零库存录入系统）",
                   font=("", 11), foreground="gray").pack(pady=(10, 15))
@@ -286,7 +325,7 @@ class App(ttk.Window):
         author_entry.grid(row=2, column=1, pady=5, padx=5)
 
         ttk.Label(form, text="出版社：", width=10, anchor=E).grid(row=3, column=0, pady=5, sticky=E)
-        publisher_entry = ttk.Entry(form, width=32)
+        publisher_entry = self._publisher_input(form, width=40)
         publisher_entry.grid(row=3, column=1, pady=5, padx=5)
 
         ttk.Label(form, text="定价(元)：", width=10, anchor=E).grid(row=4, column=0, pady=5, sticky=E)
@@ -297,11 +336,7 @@ class App(ttk.Window):
         qty_var = tk.IntVar(value=1)
         ttk.Spinbox(form, from_=1, to=9999, textvariable=qty_var, width=30).grid(row=5, column=1, pady=5, padx=5)
 
-        ttk.Label(form, text="所属系部：", width=10, anchor=E).grid(row=6, column=0, pady=5, sticky=E)
-        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
-                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
-        dept_combo = ttk.Combobox(form, values=dept_list, width=30)
-        dept_combo.grid(row=6, column=1, pady=5, padx=5)
+        dept_picker = self._department_picker(form, 6, width=20)
 
         ttk.Label(form, text="老师姓名：", width=10, anchor=E).grid(row=7, column=0, pady=5, sticky=E)
         teacher_entry = ttk.Entry(form, width=32)
@@ -351,7 +386,7 @@ class App(ttk.Window):
             except:
                 price = 0
 
-            dept = dept_combo.get().strip()
+            dept = self._department_value(dept_picker)
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
 
@@ -390,7 +425,7 @@ class App(ttk.Window):
 
     # ── 出入库弹窗 ──
     def _open_stock_dialog(self, book):
-        win = self._make_window("图书出入库", "430x460")
+        win = self._make_window("图书出入库", "600x500")
 
         info = ttk.Labelframe(win, text="图书信息", padding=10)
         info.pack(fill=X, padx=15, pady=10)
@@ -408,11 +443,7 @@ class App(ttk.Window):
         qty_var = tk.IntVar(value=1)
         ttk.Spinbox(op, from_=1, to=9999, textvariable=qty_var, width=8).grid(row=0, column=1, padx=5, sticky=W)
 
-        ttk.Label(op, text="所属系部：").grid(row=1, column=0, pady=(8, 0), sticky=E)
-        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
-                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
-        dept_combo = ttk.Combobox(op, values=dept_list, width=19)
-        dept_combo.grid(row=1, column=1, padx=5, pady=(8, 0), sticky=W)
+        dept_picker = self._department_picker(op, 1, width=20)
 
         ttk.Label(op, text="老师姓名：").grid(row=2, column=0, pady=(4, 0), sticky=E)
         teacher_entry = ttk.Entry(op, width=22)
@@ -428,7 +459,7 @@ class App(ttk.Window):
             if direction == "out" and qty > book["stock"]:
                 if not messagebox.askyesno("确认", f"当前库存仅 {book['stock']} 本，确定出库 {qty} 本吗？\n（库存将变为负数）", parent=win):
                     return
-            dept = dept_combo.get().strip()
+            dept = self._department_value(dept_picker)
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
             db.update_stock(book["id"], qty, direction, self.current_user.get("display_name", ""), remark)
@@ -443,12 +474,12 @@ class App(ttk.Window):
 
     # ── 新增图书 ──
     def _open_add_book(self, isbn="", auto_lookup=False):
-        win = self._make_window("新增图书", "440x560")
+        win = self._make_window("新增图书", "620x600")
 
         fields = {}
         for i, (label, key) in enumerate([("ISBN", "isbn"), ("书名", "title"), ("作者", "author"), ("出版社", "publisher")]):
             ttk.Label(win, text=f"{label}：").grid(row=i, column=0, padx=10, pady=4, sticky=E)
-            e = ttk.Entry(win, width=30)
+            e = self._publisher_input(win) if key == "publisher" else ttk.Entry(win, width=30)
             e.grid(row=i, column=1, padx=10, pady=4)
             fields[key] = e
         fields["isbn"].insert(0, isbn)
@@ -479,11 +510,7 @@ class App(ttk.Window):
         vol_entry = ttk.Entry(win, width=30)
         vol_entry.grid(row=8, column=1, padx=10, pady=4)
 
-        ttk.Label(win, text="所属系部：").grid(row=9, column=0, padx=10, pady=4, sticky=E)
-        dept_list = ["先进制造产业学院", "智能装备产业学院", "信息技术产业学院", "现代商务产业学院",
-                     "汽车工程产业学院", "现代食品产业学院", "现代服务产业学院"]
-        dept_combo_add = ttk.Combobox(win, values=dept_list, width=27)
-        dept_combo_add.grid(row=9, column=1, padx=10, pady=4)
+        dept_picker = self._department_picker(win, 9, width=20)
 
         ttk.Label(win, text="老师姓名：").grid(row=10, column=0, padx=10, pady=4, sticky=E)
         teacher_entry = ttk.Entry(win, width=30)
@@ -522,7 +549,7 @@ class App(ttk.Window):
                 price = price_var.get()
             except Exception:
                 price = 0
-            dept = dept_combo_add.get().strip()
+            dept = self._department_value(dept_picker)
             teacher = teacher_entry.get().strip()
             remark = " ".join(filter(None, [dept, teacher]))
             try:
@@ -660,7 +687,7 @@ class App(ttk.Window):
 
         ttk.Button(bf, text="详情", command=detail).pack(side=LEFT, padx=5)
         ttk.Button(bf, text="编辑", command=edit).pack(side=LEFT, padx=5)
-        ttk.Button(bf, text="删除", bootstyle=DANGER, command=delete).pack(side=LEFT, padx=5)
+        ttk.Button(bf, text="删除所选图书", bootstyle=DANGER, command=delete).pack(side=LEFT, padx=5)
         refresh()
 
     # ── 图书详情 ──
@@ -709,7 +736,7 @@ class App(ttk.Window):
         if not book:
             return
 
-        win = self._make_window("编辑图书", "420x450")
+        win = self._make_window("编辑图书", "500x470")
 
         fields = {}
         for i, (label, key, val) in enumerate([
@@ -717,7 +744,7 @@ class App(ttk.Window):
             ("作者", "author", book["author"]), ("出版社", "publisher", book["publisher"]),
         ]):
             ttk.Label(win, text=f"{label}：").grid(row=i, column=0, padx=10, pady=4, sticky=E)
-            e = ttk.Entry(win, width=30)
+            e = self._publisher_input(win) if key == "publisher" else ttk.Entry(win, width=30)
             e.insert(0, val or "")
             e.grid(row=i, column=1, padx=10, pady=4)
             fields[key] = e
@@ -776,7 +803,7 @@ class App(ttk.Window):
     def _open_logs(self):
         win = ttk.Toplevel(self)
         win.title("出入库记录")
-        win.geometry("800x450")
+        win.geometry("1050x520")
 
         sf = ttk.Frame(win)
         sf.pack(fill=X, padx=10, pady=8)
@@ -815,7 +842,7 @@ class App(ttk.Window):
             cid = cat_map.get(cat_combo.get())
             for log in db.get_stock_logs(direction=direction, date_from=from_entry.get().strip() or None,
                                           date_to=to_entry.get().strip() or None, category_id=cid, limit=500):
-                tree.insert("", END, values=(
+                tree.insert("", END, iid=str(log["id"]), values=(
                     log["created_at"], log["isbn"], log["title"],
                     "入库" if log["direction"] == "in" else "出库", log["change"],
                     log["operator"] or "", log["remark"] or ""))
@@ -836,6 +863,20 @@ class App(ttk.Window):
             messagebox.showinfo("完成", f"已导出 {count} 条记录", parent=win)
 
         ttk.Button(sf, text="导出", bootstyle=OUTLINE, command=export_filtered).pack(side=LEFT, padx=5)
+
+        def delete_selected():
+            selected = tree.selection()
+            if not selected:
+                return messagebox.showwarning("提示", "请先选择一条记录", parent=win)
+            values = tree.item(selected[0], "values")
+            if not messagebox.askyesno("确认", f"确定删除《{values[2]}》的这条{values[3]}记录？\n库存数量将同步撤销。", parent=win):
+                return
+            db.delete_stock_log(int(selected[0]))
+            refresh()
+            self._refresh_recent()
+            self._refresh_stats()
+
+        ttk.Button(sf, text="删除选中记录", bootstyle=DANGER, command=delete_selected).pack(side=LEFT, padx=5)
         refresh()
 
     # ── 库存预警 ──
@@ -1148,7 +1189,24 @@ class App(ttk.Window):
         ttk.Button(btn_row, text="保存", bootstyle=SUCCESS, command=save, width=12).pack(side=LEFT, padx=10)
         ttk.Button(btn_row, text="修改密码", bootstyle=OUTLINE, command=self._open_change_pwd, width=12).pack(side=LEFT, padx=10)
 
-    # ── 导出 ──
+    # ── 导入/导出 ──
+    def _import_data(self):
+        path = filedialog.askopenfilename(title="导入以往导出的数据", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            backup = db.backup_db()
+            kind, added, updated, skipped = db.import_csv(path)
+        except Exception as ex:
+            return messagebox.showerror("导入失败", str(ex), parent=self)
+        if kind == "books":
+            detail = f"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条"
+        else:
+            detail = f"新增 {added} 条历史记录，跳过 {skipped} 条\n（历史记录不重复改变当前库存）"
+        messagebox.showinfo("导入完成", f"{detail}\n\n导入前备份：{backup}", parent=self)
+        self._refresh_recent()
+        self._refresh_stats()
+
     def _export_menu(self):
         win = self._make_window("导出数据", "300x150")
 

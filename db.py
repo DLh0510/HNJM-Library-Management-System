@@ -5,14 +5,14 @@ import csv
 import shutil
 from datetime import datetime
 
-# 数据库路径：打包后放在 exe 同级目录（持久化），源码运行时放在项目目录
+# 数据库路径：打包后放在用户本地应用数据目录，不在桌面生成数据文件
 def get_data_dir():
     if getattr(sys, 'frozen', False):
-        # PyInstaller 打包后，exe 所在目录
-        return os.path.dirname(sys.executable)
-    else:
-        # 源码运行
-        return os.path.dirname(__file__)
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, "河南经贸图书出入库管理系统")
+        os.makedirs(path, exist_ok=True)
+        return path
+    return os.path.dirname(__file__)
 
 DB_PATH = os.path.join(get_data_dir(), "library.db")
 BACKUP_DIR = os.path.join(get_data_dir(), "backups")
@@ -25,7 +25,23 @@ def get_conn():
     return conn
 
 
+def migrate_legacy_data():
+    """首次升级时将旧版在 EXE 同目录生成的数据移走。"""
+    if not getattr(sys, 'frozen', False):
+        return
+    old_dir = os.path.dirname(sys.executable)
+    new_dir = get_data_dir()
+    if os.path.normcase(old_dir) == os.path.normcase(new_dir):
+        return
+    for name in ("library.db", "api_config.json", ".last_user", "backups"):
+        old_path = os.path.join(old_dir, name)
+        new_path = os.path.join(new_dir, name)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            shutil.move(old_path, new_path)
+
+
 def init_db():
+    migrate_legacy_data()
     conn = get_conn()
     c = conn.cursor()
     c.executescript("""
@@ -173,6 +189,20 @@ def delete_book(book_id):
     conn.commit()
     conn.close()
 
+def delete_stock_log(log_id):
+    """删除错误的出入库记录，并撤销该记录对库存的影响。"""
+    conn = get_conn()
+    row = conn.execute("SELECT book_id, change, direction FROM stock_log WHERE id=?", (log_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    delta = row["change"] if row["direction"] == "in" else -row["change"]
+    conn.execute("UPDATE book SET stock = stock - ? WHERE id=?", (delta, row["book_id"]))
+    conn.execute("DELETE FROM stock_log WHERE id=?", (log_id,))
+    conn.commit()
+    conn.close()
+    return True
+
 def update_stock(book_id, qty, direction, operator="", remark=""):
     conn = get_conn()
     sign = qty if direction == "in" else -qty
@@ -272,6 +302,90 @@ def export_logs_csv(filepath, direction=None, date_from=None, date_to=None, cate
                         "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"],
                         dept, teacher])
     return len(logs)
+
+
+def _number(value, cast=float, default=0):
+    try:
+        return cast(str(value or "").replace("¥", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def import_csv(filepath):
+    """导入本系统导出的图书列表或出入库记录 CSV。"""
+    with open(filepath, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        headers = set(reader.fieldnames or [])
+        rows = list(reader)
+
+    if {"ISBN", "书名", "库存"}.issubset(headers):
+        kind = "books"
+    elif {"时间", "ISBN", "书名", "类型", "数量"}.issubset(headers):
+        kind = "logs"
+    else:
+        raise ValueError("不是本系统导出的图书列表或出入库记录 CSV")
+
+    conn = get_conn()
+    added = updated = skipped = 0
+    try:
+        for row in rows:
+            isbn, title = (row.get("ISBN") or "").strip(), (row.get("书名") or "").strip()
+            if not isbn or not title:
+                skipped += 1
+                continue
+            if kind == "books":
+                note = (row.get("备注") or "").strip()
+                category = (row.get("分类") or "").strip()
+                category_id = None
+                if category:
+                    conn.execute("INSERT OR IGNORE INTO category(name) VALUES(?)", (category,))
+                    category_id = conn.execute("SELECT id FROM category WHERE name=?", (category,)).fetchone()[0]
+                existing = conn.execute(
+                    "SELECT id FROM book WHERE isbn=? AND title=? AND volume_note=?",
+                    (isbn, title, note)).fetchone()
+                values = ((row.get("作者") or "").strip(), (row.get("出版社") or "").strip(),
+                          _number(row.get("单价")), category_id, _number(row.get("库存"), int),
+                          _number(row.get("最低库存"), int))
+                if existing:
+                    conn.execute("UPDATE book SET author=?,publisher=?,price=?,category_id=?,stock=?,min_stock=? WHERE id=?",
+                                 values + (existing["id"],))
+                    updated += 1
+                else:
+                    conn.execute("INSERT INTO book(isbn,title,author,publisher,price,category_id,stock,min_stock,volume_note) VALUES(?,?,?,?,?,?,?,?,?)",
+                                 (isbn, title) + values + (note,))
+                    added += 1
+            else:
+                direction = {"入库": "in", "出库": "out"}.get((row.get("类型") or "").strip())
+                qty = _number(row.get("数量"), int)
+                if not direction or qty <= 0:
+                    skipped += 1
+                    continue
+                book = conn.execute("SELECT id FROM book WHERE isbn=? AND title=? ORDER BY id LIMIT 1", (isbn, title)).fetchone()
+                if not book:
+                    cur = conn.execute("INSERT INTO book(isbn,title,author,publisher,price,stock) VALUES(?,?,?,?,?,0)",
+                                       (isbn, title, (row.get("作者") or "").strip(),
+                                        (row.get("出版社") or "").strip(), _number(row.get("单价"))))
+                    book_id = cur.lastrowid
+                else:
+                    book_id = book["id"]
+                created_at = (row.get("时间") or "").strip() or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                remark = " ".join(filter(None, [(row.get("系部") or "").strip(), (row.get("老师") or "").strip()]))
+                duplicate = conn.execute(
+                    "SELECT 1 FROM stock_log WHERE book_id=? AND change=? AND direction=? AND operator=? AND remark=? AND created_at=?",
+                    (book_id, qty, direction, (row.get("操作员") or "").strip(), remark, created_at)).fetchone()
+                if duplicate:
+                    skipped += 1
+                    continue
+                conn.execute("INSERT INTO stock_log(book_id,change,direction,operator,remark,created_at) VALUES(?,?,?,?,?,?)",
+                             (book_id, qty, direction, (row.get("操作员") or "").strip(), remark, created_at))
+                added += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return kind, added, updated, skipped
 
 
 # ── 备份 ──

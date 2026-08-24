@@ -4,7 +4,7 @@ import json
 import re
 import ssl
 import os
-import sys
+import db
 
 _ctx = None
 
@@ -22,14 +22,7 @@ def _get_ssl_ctx():
         _ctx.verify_mode = ssl.CERT_NONE
     return _ctx
 
-def _get_data_dir():
-    """打包后配置存 exe 同级目录（可持久化），源码运行时存项目目录"""
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(__file__)
-
-
-CONFIG_PATH = os.path.join(_get_data_dir(), "api_config.json")
+CONFIG_PATH = os.path.join(db.get_data_dir(), "api_config.json")
 
 # ── 所有可用数据源注册表 ──
 PROVIDERS = {}
