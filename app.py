@@ -20,6 +20,15 @@ def resource_path(filename):
         base = os.path.dirname(__file__)
     return os.path.join(base, filename)
 
+
+def data_path(filename):
+    """可写数据路径：打包后放 exe 同级目录（持久化），源码运行时放项目目录"""
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(__file__)
+    return os.path.join(base, filename)
+
 LOGO_PATH = resource_path("logo.png")
 
 
@@ -56,7 +65,7 @@ class App(ttk.Window):
         self.user_entry = ttk.Entry(form, width=30, font=("", 13))
         self.user_entry.grid(row=1, column=0, ipady=4)
         # 记住上次登录的用户名
-        last_user_file = os.path.join(os.path.dirname(__file__), ".last_user")
+        last_user_file = data_path(".last_user")
         if os.path.exists(last_user_file):
             try:
                 with open(last_user_file, "r") as f:
@@ -86,7 +95,7 @@ class App(ttk.Window):
         if user:
             self.current_user = dict(user)
             try:
-                with open(os.path.join(os.path.dirname(__file__), ".last_user"), "w") as f:
+                with open(data_path(".last_user"), "w") as f:
                     f.write(username)
             except Exception:
                 pass

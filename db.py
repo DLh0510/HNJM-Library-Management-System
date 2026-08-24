@@ -1,11 +1,21 @@
 import sqlite3
 import os
+import sys
 import csv
 import shutil
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "library.db")
-BACKUP_DIR = os.path.join(os.path.dirname(__file__), "backups")
+# 数据库路径：打包后放在 exe 同级目录（持久化），源码运行时放在项目目录
+def get_data_dir():
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后，exe 所在目录
+        return os.path.dirname(sys.executable)
+    else:
+        # 源码运行
+        return os.path.dirname(__file__)
+
+DB_PATH = os.path.join(get_data_dir(), "library.db")
+BACKUP_DIR = os.path.join(get_data_dir(), "backups")
 
 
 def get_conn():
