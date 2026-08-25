@@ -170,6 +170,22 @@ class App(ttk.Window):
         group, dept = (item.get().strip() for item in picker)
         return f"{group}/{dept}" if group and dept else group or dept
 
+    @staticmethod
+    def _set_department_picker(picker, value):
+        group_combo, dept_combo = picker
+        group_name = dept_name = ""
+        if "/" in value:
+            group_name, dept_name = value.split("/", 1)
+        else:
+            for name, departments in DEPARTMENTS.items():
+                if value in departments:
+                    group_name, dept_name = name, value
+                    break
+        if group_name in DEPARTMENTS:
+            group_combo.set(group_name)
+            dept_combo.config(values=DEPARTMENTS[group_name])
+            dept_combo.set(dept_name if dept_name in DEPARTMENTS[group_name] else DEPARTMENTS[group_name][0])
+
     def _apply_stripe(self, tree):
         """给 Treeview 加斑马纹"""
         tree.tag_configure("odd", background="#f0f0f0")
@@ -211,13 +227,20 @@ class App(ttk.Window):
             self._stats_labels[key] = lbl
 
         # 最近记录
-        ttk.Label(self, text="最近出入库记录", font=("", 12, "bold")).pack(anchor=W, padx=15)
+        recent_bar = ttk.Frame(self)
+        recent_bar.pack(fill=X, padx=15)
+        ttk.Label(recent_bar, text="最近出入库记录", font=("", 12, "bold")).pack(side=LEFT)
+        ttk.Button(recent_bar, text="修改选中记录", command=self._edit_selected_recent_log,
+                   bootstyle=OUTLINE).pack(side=RIGHT, padx=3)
+        ttk.Button(recent_bar, text="修改选中图书", command=self._edit_selected_recent_book,
+                   bootstyle=OUTLINE).pack(side=RIGHT, padx=3)
         cols = ("time", "isbn", "title", "price", "direction", "qty", "operator")
         self.recent_tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
         for col, hd, w in zip(cols, ("时间", "ISBN", "书名", "单价", "类型", "数量", "操作员"), (145, 125, 220, 65, 55, 55, 75)):
             self.recent_tree.heading(col, text=hd)
             self.recent_tree.column(col, width=w, anchor=W)
         self.recent_tree.pack(fill=BOTH, expand=True, padx=15, pady=(0, 10))
+        self.recent_tree.bind("<Double-1>", lambda event: self._edit_selected_recent_log())
         self._refresh_recent()
         self._refresh_stats()
 
@@ -232,7 +255,7 @@ class App(ttk.Window):
     def _refresh_recent(self):
         self.recent_tree.delete(*self.recent_tree.get_children())
         for log in db.get_stock_logs(limit=20):
-            self.recent_tree.insert("", END, values=(
+            self.recent_tree.insert("", END, iid=str(log["id"]), values=(
                 log["created_at"], log["isbn"], log["title"],
                 f"{log['price'] or 0:.2f}",
                 "入库" if log["direction"] == "in" else "出库", log["change"],
@@ -240,6 +263,26 @@ class App(ttk.Window):
         self._apply_stripe(self.recent_tree)
         if hasattr(self, '_stats_labels'):
             self._refresh_stats()
+
+    def _selected_recent_log_id(self):
+        selected = self.recent_tree.selection()
+        if not selected:
+            messagebox.showwarning("提示", "请先在最近记录中选择一行", parent=self)
+            return None
+        return int(selected[0])
+
+    def _edit_selected_recent_log(self):
+        log_id = self._selected_recent_log_id()
+        if log_id:
+            self._open_edit_stock_log(log_id)
+
+    def _edit_selected_recent_book(self):
+        log_id = self._selected_recent_log_id()
+        if not log_id:
+            return
+        log = db.get_stock_log(log_id)
+        if log:
+            self._open_edit_book(log["book_id"], on_done=self._refresh_recent)
 
     def _check_low_stock(self):
         low = db.get_low_stock_books()
@@ -471,6 +514,53 @@ class App(ttk.Window):
                    command=lambda: do_stock("in")).pack(side=LEFT, padx=10)
         ttk.Button(btn_row, text="出库", bootstyle=DANGER, width=10,
                    command=lambda: do_stock("out")).pack(side=LEFT, padx=10)
+
+    def _open_edit_stock_log(self, log_id):
+        log = db.get_stock_log(log_id)
+        if not log:
+            return messagebox.showwarning("提示", "该记录已不存在", parent=self)
+        win = self._make_window("修改出入库记录", "620x380")
+
+        info = ttk.Labelframe(win, text="图书信息", padding=10)
+        info.pack(fill=X, padx=15, pady=10)
+        ttk.Label(info, text=f"ISBN：{log['isbn']}").pack(anchor=W)
+        ttk.Label(info, text=f"书名：{log['title']}").pack(anchor=W)
+
+        form = ttk.Frame(win)
+        form.pack(padx=15, pady=5)
+        ttk.Label(form, text="类型：", width=10, anchor=E).grid(row=0, column=0, pady=5, sticky=E)
+        direction_combo = ttk.Combobox(form, values=["入库", "出库"], width=12, state="readonly")
+        direction_combo.set("入库" if log["direction"] == "in" else "出库")
+        direction_combo.grid(row=0, column=1, pady=5, padx=5, sticky=W)
+
+        ttk.Label(form, text="数量：", width=10, anchor=E).grid(row=1, column=0, pady=5, sticky=E)
+        qty_var = tk.IntVar(value=log["change"])
+        ttk.Spinbox(form, from_=1, to=99999, textvariable=qty_var, width=12).grid(row=1, column=1, pady=5, padx=5, sticky=W)
+
+        remark_parts = (log["remark"] or "").split(" ", 1)
+        dept_picker = self._department_picker(form, 2, width=20)
+        self._set_department_picker(dept_picker, remark_parts[0])
+        ttk.Label(form, text="老师姓名：", width=10, anchor=E).grid(row=3, column=0, pady=5, sticky=E)
+        teacher_entry = ttk.Entry(form, width=30)
+        teacher_entry.insert(0, remark_parts[1] if len(remark_parts) > 1 else "")
+        teacher_entry.grid(row=3, column=1, pady=5, padx=5, sticky=W)
+
+        def save():
+            try:
+                qty = int(qty_var.get())
+            except (ValueError, tk.TclError):
+                return messagebox.showwarning("提示", "数量必须是正整数", parent=win)
+            direction = {"入库": "in", "出库": "out"}[direction_combo.get()]
+            remark = " ".join(filter(None, [self._department_value(dept_picker), teacher_entry.get().strip()]))
+            try:
+                db.update_stock_log(log_id, qty, direction, remark)
+            except Exception as ex:
+                return messagebox.showerror("修改失败", str(ex), parent=win)
+            win.destroy()
+            self._refresh_recent()
+            messagebox.showinfo("完成", "记录和库存已同步更新", parent=self)
+
+        ttk.Button(win, text="保存修改", bootstyle=SUCCESS, command=save, width=15).pack(pady=10)
 
     # ── 新增图书 ──
     def _open_add_book(self, isbn="", auto_lookup=False):
@@ -850,16 +940,17 @@ class App(ttk.Window):
         ttk.Button(sf, text="筛选", bootstyle=PRIMARY, command=refresh).pack(side=LEFT, padx=5)
 
         def export_filtered():
-            path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-                                                 initialfile="出入库记录.csv", parent=win)
+            path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel 工作簿", "*.xlsx"), ("CSV", "*.csv")],
+                                                 initialfile="出入库记录.xlsx", parent=win)
             if not path: return
             d = dir_combo.get()
             direction = {"入库": "in", "出库": "out"}.get(d)
             cid = cat_map.get(cat_combo.get())
-            count = db.export_logs_csv(path, direction=direction,
-                                        date_from=from_entry.get().strip() or None,
-                                        date_to=to_entry.get().strip() or None,
-                                        category_id=cid)
+            count = db.export_logs(path, direction=direction,
+                                   date_from=from_entry.get().strip() or None,
+                                   date_to=to_entry.get().strip() or None,
+                                   category_id=cid)
             messagebox.showinfo("完成", f"已导出 {count} 条记录", parent=win)
 
         ttk.Button(sf, text="导出", bootstyle=OUTLINE, command=export_filtered).pack(side=LEFT, padx=5)
@@ -1191,14 +1282,16 @@ class App(ttk.Window):
 
     # ── 导入/导出 ──
     def _import_data(self):
-        path = filedialog.askopenfilename(title="导入以往导出的数据", filetypes=[("CSV", "*.csv")])
+        path = filedialog.askopenfilename(title="导入以往导出的 XLSX 或 CSV 数据",
+                                          filetypes=[("支持的文件", "*.xlsx *.csv"),
+                                                     ("Excel 工作簿", "*.xlsx"), ("CSV", "*.csv")])
         if not path:
             return
         try:
             backup = db.backup_db()
-            kind, added, updated, skipped = db.import_csv(path)
+            kind, added, updated, skipped = db.import_data(path)
         except Exception as ex:
-            return messagebox.showerror("导入失败", str(ex), parent=self)
+            return messagebox.showerror("导入失败", f"{ex}\n\n建议直接选择 XLSX；CSV 已自动兼容 UTF-8、GBK 和 UTF-16 编码。", parent=self)
         if kind == "books":
             detail = f"新增 {added} 条，更新 {updated} 条，跳过 {skipped} 条"
         else:
@@ -1208,18 +1301,21 @@ class App(ttk.Window):
         self._refresh_stats()
 
     def _export_menu(self):
-        win = self._make_window("导出数据", "300x150")
+        win = self._make_window("导出数据", "380x220")
+
+        ttk.Label(win, text="推荐 XLSX；CSV 为兼容旧版保留。", foreground="gray").pack(pady=(15, 5))
 
         def export(fn, name):
-            path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-                                                 initialfile=name, parent=win)
+            path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel 工作簿", "*.xlsx"), ("CSV", "*.csv")],
+                                                 initialfile=f"{name}.xlsx", parent=win)
             if path:
                 count = fn(path)
                 messagebox.showinfo("完成", f"已导出 {count} 条")
                 win.destroy()
 
-        ttk.Button(win, text="导出图书列表", width=25, command=lambda: export(db.export_books_csv, "图书列表.csv")).pack(pady=15)
-        ttk.Button(win, text="导出出入库记录", width=25, command=lambda: export(db.export_logs_csv, "出入库记录.csv")).pack(pady=5)
+        ttk.Button(win, text="导出图书列表", width=25, command=lambda: export(db.export_books, "图书列表")).pack(pady=10)
+        ttk.Button(win, text="导出出入库记录", width=25, command=lambda: export(db.export_logs, "出入库记录")).pack(pady=5)
 
     # ── 备份 ──
     def _manual_backup(self):

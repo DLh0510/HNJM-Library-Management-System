@@ -20,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install ttkbootstrap pillow pyinstaller flask cryptography qrcode pypng requests
+        run: pip install ttkbootstrap pillow pyinstaller flask cryptography qrcode pypng requests openpyxl
 
       - name: 测试
         run: python -m unittest -v test_db.py
@@ -33,6 +33,7 @@ jobs:
           --add-data "logo.png;."
           --add-data "logo.ico;."
           --collect-all ttkbootstrap
+          --collect-all openpyxl
           --hidden-import flask
           --hidden-import cryptography
           --hidden-import requests

@@ -13,7 +13,8 @@
 - **套装书支持** — 同ISBN多册分开管理，备注区分
 - **操作员追溯** — 每次操作记录操作员和备注（系别+老师）
 - **数据统计** — 首页看板显示藏书量、今日出入库、预警数
-- **数据导入/导出** — 图书列表和出入库记录 CSV 可导出、再导入
+- **数据导入/导出** — 图书列表和出入库记录支持 XLSX/CSV，CSV 自动兼容 UTF-8、GBK 和 UTF-16
+- **快速修改** — 首页最近记录可直接修改图书或出入库记录，库存自动校正
 - **记录删除** — 可删除图书或错误的出入库记录，并同步撤销库存变化
 - **机构与出版社选择** — 机构分级选择，出版社可选择或自定义输入
 - **自动备份** — 每小时自动备份数据库，保留最近10份
@@ -27,7 +28,7 @@
 ### 源码运行
 
 ```bash
-pip install ttkbootstrap flask cryptography qrcode pypng requests pillow
+pip install ttkbootstrap flask cryptography qrcode pypng requests pillow openpyxl
 python app.py
 ```
 

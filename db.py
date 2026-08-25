@@ -2,6 +2,7 @@ import sqlite3
 import os
 import sys
 import csv
+import io
 import shutil
 from datetime import datetime
 
@@ -69,6 +70,7 @@ def init_db():
             direction TEXT NOT NULL CHECK(direction IN ('in','out')),
             operator TEXT DEFAULT '',
             remark TEXT DEFAULT '',
+            affects_stock INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (book_id) REFERENCES book(id)
         );
@@ -86,7 +88,8 @@ def init_db():
             c.execute(f"ALTER TABLE book ADD COLUMN {col} {typ}")
         except Exception:
             pass
-    for col, typ in [("operator", "TEXT DEFAULT ''"), ("remark", "TEXT DEFAULT ''")]:
+    for col, typ in [("operator", "TEXT DEFAULT ''"), ("remark", "TEXT DEFAULT ''"),
+                     ("affects_stock", "INTEGER DEFAULT 1")]:
         try:
             c.execute(f"ALTER TABLE stock_log ADD COLUMN {col} {typ}")
         except Exception:
@@ -192,12 +195,13 @@ def delete_book(book_id):
 def delete_stock_log(log_id):
     """删除错误的出入库记录，并撤销该记录对库存的影响。"""
     conn = get_conn()
-    row = conn.execute("SELECT book_id, change, direction FROM stock_log WHERE id=?", (log_id,)).fetchone()
+    row = conn.execute("SELECT book_id, change, direction, affects_stock FROM stock_log WHERE id=?", (log_id,)).fetchone()
     if not row:
         conn.close()
         return False
-    delta = row["change"] if row["direction"] == "in" else -row["change"]
-    conn.execute("UPDATE book SET stock = stock - ? WHERE id=?", (delta, row["book_id"]))
+    if row["affects_stock"]:
+        delta = row["change"] if row["direction"] == "in" else -row["change"]
+        conn.execute("UPDATE book SET stock = stock - ? WHERE id=?", (delta, row["book_id"]))
     conn.execute("DELETE FROM stock_log WHERE id=?", (log_id,))
     conn.commit()
     conn.close()
@@ -272,35 +276,100 @@ def get_stock_logs(book_id=None, limit=200, direction=None, date_from=None, date
     return rows
 
 
-# ── 导出 ──
-def export_books_csv(filepath):
+def get_stock_log(log_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT l.*, b.title, b.isbn, b.author, b.publisher, b.price FROM stock_log l JOIN book b ON l.book_id=b.id WHERE l.id=?",
+        (log_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def update_stock_log(log_id, qty, direction, remark=""):
+    """修改出入库记录，并按新旧差额校正库存。"""
+    if qty <= 0 or direction not in ("in", "out"):
+        raise ValueError("数量必须大于 0，类型必须是入库或出库")
+    conn = get_conn()
+    row = conn.execute("SELECT book_id, change, direction, affects_stock FROM stock_log WHERE id=?", (log_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    try:
+        if row["affects_stock"]:
+            old_delta = row["change"] if row["direction"] == "in" else -row["change"]
+            new_delta = qty if direction == "in" else -qty
+            conn.execute("UPDATE book SET stock = stock + ? WHERE id=?", (new_delta - old_delta, row["book_id"]))
+        conn.execute("UPDATE stock_log SET change=?, direction=?, remark=? WHERE id=?", (qty, direction, remark, log_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return True
+
+
+# ── 导入/导出 ──
+BOOK_HEADERS = ["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存", "备注"]
+LOG_HEADERS = ["时间", "ISBN", "书名", "作者", "出版社", "单价", "类型", "数量", "操作员", "系部", "老师"]
+
+
+def _write_table(filepath, headers, rows, sheet_name):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".csv":
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            writer.writerows(rows)
+        return
+    if ext == ".xlsx":
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet_name
+        ws.append(headers)
+        for row in rows:
+            ws.append(row)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for index, header in enumerate(headers, 1):
+            values = [str(ws.cell(row, index).value or "") for row in range(1, ws.max_row + 1)]
+            display_width = max(sum(2 if ord(char) > 127 else 1 for char in value) for value in values)
+            ws.column_dimensions[get_column_letter(index)].width = min(display_width + 2, 40)
+            if header == "ISBN":
+                for cell in ws[get_column_letter(index)]:
+                    cell.number_format = "@"
+            elif header == "单价":
+                for cell in ws[get_column_letter(index)][1:]:
+                    cell.number_format = "0.00"
+        wb.save(filepath)
+        return
+    raise ValueError("仅支持 .xlsx 和 .csv 格式")
+
+
+def export_books(filepath):
     conn = get_conn()
     rows = conn.execute("SELECT b.isbn, b.title, b.author, b.publisher, b.price, COALESCE(c.name,'') as category, b.stock, b.min_stock, b.volume_note FROM book b LEFT JOIN category c ON b.category_id=c.id ORDER BY b.title, b.volume_note").fetchall()
     conn.close()
-    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(["ISBN", "书名", "作者", "出版社", "单价", "分类", "库存", "最低库存", "备注"])
-        for r in rows:
-            w.writerow([r["isbn"], r["title"], r["author"], r["publisher"],
-                        f"{r['price'] or 0:.2f}", r["category"], r["stock"], r["min_stock"], r["volume_note"]])
+    data = [[r["isbn"], r["title"], r["author"], r["publisher"], float(r["price"] or 0),
+             r["category"], r["stock"], r["min_stock"], r["volume_note"]] for r in rows]
+    _write_table(filepath, BOOK_HEADERS, data, "图书列表")
     return len(rows)
 
-def export_logs_csv(filepath, direction=None, date_from=None, date_to=None, category_id=None):
+def export_logs(filepath, direction=None, date_from=None, date_to=None, category_id=None):
     logs = get_stock_logs(direction=direction, date_from=date_from, date_to=date_to, category_id=category_id, limit=None)
-    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(["时间", "ISBN", "书名", "作者", "出版社", "单价", "类型", "数量", "操作员", "系部", "老师"])
-        for r in logs:
-            # 拆分备注：格式为 "系部 老师"
-            remark = r["remark"] or ""
-            parts = remark.split(" ", 1)
-            dept = parts[0] if len(parts) > 0 else ""
-            teacher = parts[1] if len(parts) > 1 else ""
-
-            w.writerow([r["created_at"], r["isbn"], r["title"], r["author"], r["publisher"],
-                        f"{r['price'] or 0:.2f}",
-                        "入库" if r["direction"] == "in" else "出库", r["change"], r["operator"],
-                        dept, teacher])
+    data = []
+    for r in logs:
+        parts = (r["remark"] or "").split(" ", 1)
+        data.append([r["created_at"], r["isbn"], r["title"], r["author"], r["publisher"],
+                     float(r["price"] or 0), "入库" if r["direction"] == "in" else "出库",
+                     r["change"], r["operator"], parts[0], parts[1] if len(parts) > 1 else ""])
+    _write_table(filepath, LOG_HEADERS, data, "出入库记录")
     return len(logs)
 
 
@@ -311,31 +380,73 @@ def _number(value, cast=float, default=0):
         return default
 
 
-def import_csv(filepath):
-    """导入本系统导出的图书列表或出入库记录 CSV。"""
-    with open(filepath, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        headers = set(reader.fieldnames or [])
-        rows = list(reader)
+def _text(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _read_table(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".xlsx":
+        from openpyxl import load_workbook
+
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        values = list(wb.active.iter_rows(values_only=True))
+        wb.close()
+        if not values:
+            return set(), []
+        headers = [_text(value) for value in values[0]]
+        return set(headers), [dict(zip(headers, row)) for row in values[1:]]
+    if ext == ".csv":
+        with open(filepath, "rb") as f:
+            raw = f.read()
+        encodings = ["utf-8-sig"]
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            encodings.append("utf-16")
+        encodings.append("gb18030")
+        for encoding in encodings:
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise ValueError("CSV 编码无法识别；请用 Excel 另存为 XLSX，或选择 CSV UTF-8")
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",\t;")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        headers = {_text(header) for header in (reader.fieldnames or [])}
+        return headers, list(reader)
+    raise ValueError("仅支持 .xlsx 和 .csv 格式")
+
+
+def import_data(filepath):
+    """导入本系统导出的图书列表或出入库记录 XLSX/CSV。"""
+    headers, rows = _read_table(filepath)
 
     if {"ISBN", "书名", "库存"}.issubset(headers):
         kind = "books"
     elif {"时间", "ISBN", "书名", "类型", "数量"}.issubset(headers):
         kind = "logs"
     else:
-        raise ValueError("不是本系统导出的图书列表或出入库记录 CSV")
+        raise ValueError("不是本系统导出的图书列表或出入库记录 XLSX/CSV")
 
     conn = get_conn()
     added = updated = skipped = 0
     try:
         for row in rows:
-            isbn, title = (row.get("ISBN") or "").strip(), (row.get("书名") or "").strip()
+            isbn, title = _text(row.get("ISBN")), _text(row.get("书名"))
             if not isbn or not title:
                 skipped += 1
                 continue
             if kind == "books":
-                note = (row.get("备注") or "").strip()
-                category = (row.get("分类") or "").strip()
+                note = _text(row.get("备注"))
+                category = _text(row.get("分类"))
                 category_id = None
                 if category:
                     conn.execute("INSERT OR IGNORE INTO category(name) VALUES(?)", (category,))
@@ -343,7 +454,7 @@ def import_csv(filepath):
                 existing = conn.execute(
                     "SELECT id FROM book WHERE isbn=? AND title=? AND volume_note=?",
                     (isbn, title, note)).fetchone()
-                values = ((row.get("作者") or "").strip(), (row.get("出版社") or "").strip(),
+                values = (_text(row.get("作者")), _text(row.get("出版社")),
                           _number(row.get("单价")), category_id, _number(row.get("库存"), int),
                           _number(row.get("最低库存"), int))
                 if existing:
@@ -355,7 +466,7 @@ def import_csv(filepath):
                                  (isbn, title) + values + (note,))
                     added += 1
             else:
-                direction = {"入库": "in", "出库": "out"}.get((row.get("类型") or "").strip())
+                direction = {"入库": "in", "出库": "out"}.get(_text(row.get("类型")))
                 qty = _number(row.get("数量"), int)
                 if not direction or qty <= 0:
                     skipped += 1
@@ -363,21 +474,21 @@ def import_csv(filepath):
                 book = conn.execute("SELECT id FROM book WHERE isbn=? AND title=? ORDER BY id LIMIT 1", (isbn, title)).fetchone()
                 if not book:
                     cur = conn.execute("INSERT INTO book(isbn,title,author,publisher,price,stock) VALUES(?,?,?,?,?,0)",
-                                       (isbn, title, (row.get("作者") or "").strip(),
-                                        (row.get("出版社") or "").strip(), _number(row.get("单价"))))
+                                       (isbn, title, _text(row.get("作者")),
+                                        _text(row.get("出版社")), _number(row.get("单价"))))
                     book_id = cur.lastrowid
                 else:
                     book_id = book["id"]
-                created_at = (row.get("时间") or "").strip() or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                remark = " ".join(filter(None, [(row.get("系部") or "").strip(), (row.get("老师") or "").strip()]))
+                created_at = _text(row.get("时间")) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                remark = " ".join(filter(None, [_text(row.get("系部")), _text(row.get("老师"))]))
                 duplicate = conn.execute(
                     "SELECT 1 FROM stock_log WHERE book_id=? AND change=? AND direction=? AND operator=? AND remark=? AND created_at=?",
-                    (book_id, qty, direction, (row.get("操作员") or "").strip(), remark, created_at)).fetchone()
+                    (book_id, qty, direction, _text(row.get("操作员")), remark, created_at)).fetchone()
                 if duplicate:
                     skipped += 1
                     continue
-                conn.execute("INSERT INTO stock_log(book_id,change,direction,operator,remark,created_at) VALUES(?,?,?,?,?,?)",
-                             (book_id, qty, direction, (row.get("操作员") or "").strip(), remark, created_at))
+                conn.execute("INSERT INTO stock_log(book_id,change,direction,operator,remark,affects_stock,created_at) VALUES(?,?,?,?,?,0,?)",
+                             (book_id, qty, direction, _text(row.get("操作员")), remark, created_at))
                 added += 1
         conn.commit()
     except Exception:
